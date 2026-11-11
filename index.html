@@ -154,6 +154,8 @@ footer.pages { padding-block: 0 10px; display: flex; flex-wrap: wrap; align-item
 }
 #chat.typing form { order: -1; border-top: 0; border-bottom: 1px solid var(--line); }
 #chat.typing .head { display: none; }
+.kid-pick { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 14px; min-height: 40px; box-sizing: border-box; }
+.kid-pick input { width: 18px; height: 18px; accent-color: var(--accent); }
 .badge { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 12px; line-height: 20px; text-align: center; margin-left: 4px; }
 
 #toast {
@@ -286,6 +288,23 @@ footer.pages { padding-block: 0 10px; display: flex; flex-wrap: wrap; align-item
   <div class="body gutter">
     <div class="kids" id="kids"></div>
     <div class="empty" id="kids-empty">아직 등록된 학생이 없어요. 아래에서 학생을 등록해 주세요.</div>
+    <form class="panel" id="handout-form" style="max-width:620px">
+      <h2>학습지 나눠 주기</h2>
+      <p class="small">이미지나 PDF를 골라 학생 공책에 새 페이지로 한 번에 넣어요. PDF는 한 쪽이 한 페이지가 돼요. 그림은 반에 한 번만 저장되고 학생 페이지는 그것을 함께 봐요.</p>
+      <div class="row">
+        <input type="file" id="h-file" accept="image/*,application/pdf" aria-label="학습지 파일" style="flex:1 1 220px">
+      </div>
+      <div class="row">
+        <span class="small">넣을 공책 이름</span>
+        <input type="text" id="h-nb" maxlength="20" value="학습지" aria-label="넣을 공책 이름" style="flex:1 1 160px">
+      </div>
+      <p class="small" style="margin:0">학생 공책에 같은 이름의 공책이 있으면 그 공책 맨 뒤에, 없으면 새 공책을 만들어 넣어요.</p>
+      <div>
+        <div class="row" style="justify-content:space-between"><span class="small">받을 학생</span><button type="button" id="h-all">모두 선택</button></div>
+        <div class="row" id="h-kids" style="margin-top:6px"></div>
+      </div>
+      <div class="row"><button type="submit" class="primary" id="h-go">나눠 주기</button><span class="small" id="h-status" aria-live="polite"></span></div>
+    </form>
     <form class="panel" id="enroll-form" style="max-width:620px">
       <h2>학생 등록</h2>
       <div class="row">

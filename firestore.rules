@@ -8,6 +8,9 @@ service cloud.firestore {
     function isTeacher(c) {
       return signedIn() && get(/databases/$(database)/documents/classes/$(c)).data.teacherUid == request.auth.uid;
     }
+    function isMember(c) {
+      return signedIn() && exists(/databases/$(database)/documents/classes/$(c)/members/$(request.auth.uid));
+    }
     function isStudent(c, s) {
       return signedIn() && get(/databases/$(database)/documents/classes/$(c)/students/$(s)).data.uid == request.auth.uid;
     }
@@ -23,6 +26,22 @@ service cloud.firestore {
         allow write: if isTeacher(c);
       }
 
+      // 반 학생 명단 (로그인 계정 → 번호). 학습지를 볼 수 있는지 확인하는 데 써요.
+      match /members/{u} {
+        allow read: if isTeacher(c) || (signedIn() && request.auth.uid == u);
+        allow write: if isTeacher(c);
+      }
+
+      // 선생님이 나눠 준 학습지 그림 (반에 한 번만 저장)
+      match /handouts/{h} {
+        allow read: if isTeacher(c) || isMember(c);
+        allow write: if isTeacher(c);
+        match /pages/{p} {
+          allow read: if isTeacher(c) || isMember(c);
+          allow write: if isTeacher(c);
+        }
+      }
+
       match /students/{s} {
         allow read: if isTeacher(c) || isStudent(c, s);
         allow create, delete: if isTeacher(c);
@@ -31,11 +50,11 @@ service cloud.firestore {
 
         match /notebooks/{nb} {
           allow read: if isTeacher(c) || isStudent(c, s);
-          allow write: if isStudent(c, s);
+          allow write: if isStudent(c, s) || isTeacher(c);   // 선생님은 학습지를 넣을 때 써요
 
           match /pages/{pg} {
             allow read: if isTeacher(c) || isStudent(c, s);
-            allow write: if isStudent(c, s);
+            allow write: if isStudent(c, s) || isTeacher(c);
 
             match /notes/{n} {
               allow read: if isTeacher(c) || isStudent(c, s);

@@ -251,7 +251,7 @@ function enterClass(c) {
   $('kids').textContent = ''; cards = {};
   classUnsub = db.collection(`classes/${c.id}/students`).onSnapshot(snap => {
     students = snap.docs.map(d => ({ ...d.data(), id: d.id })).sort((a, b) => (a.num || 0) - (b.num || 0));
-    renderClass(); renderPins();
+    renderClass(); renderPins(); renderHandoutKids(); syncMembers();
   }, err => { $('kids-empty').hidden = false; $('kids-empty').textContent = '학생 목록을 불러오지 못했어요. ' + errText(err); });
   ageTimer = setInterval(() => students.forEach(updateCardText), 15000);
 }
@@ -345,6 +345,7 @@ async function issueAccount(num, name, k) {
   const prev = students.find(s => s.id === sid) || {};
   const { id, ...rest } = prev;
   await db.doc(`classes/${classId}/students/${sid}`).set({ ...rest, num, name, uid, pin, k, created: prev.created || Date.now() });
+  await db.doc(`classes/${classId}/members/${uid}`).set({ sid });
   const roster = await db.doc(`classes/${classId}/public/roster`).get();
   await db.doc(`classes/${classId}/public/roster`).set({ ...(roster.exists ? roster.data() : {}), [sid]: k });
 }
@@ -501,7 +502,7 @@ function showPage(i) {
       const data = d.data();
       base = decodeMore(base, data.strokes || []);
       if (data.paper !== undefined && data.paper !== pg.paper) { pg.paper = data.paper; sheet.className = pg.paper; paperKey = ''; }
-      if ((data.bg || 0) !== (pg.bg || 0)) { pg.bg = data.bg || 0; paperKey = ''; ensureBg(pg); }
+      if ((data.bg || 0) !== (pg.bg || 0)) { pg.bg = data.bg || 0; pg.bgSrc = data.bgSrc || ''; paperKey = ''; ensureBg(pg); }
       safeRedraw();
     }, () => {}));
     R.fb(nb.id, pg.id).get().then(d => {
@@ -545,7 +546,11 @@ $('add-page').addEventListener('click', async () => {
 $('back').addEventListener('click', async () => {
   await flushSave(); clearPageSubs(); $('chat').hidden = true;
   if (mode === 'teacher') { show('class'); students.forEach(updateCardText); Object.keys(cards).forEach(drawThumb); }
-  else { show('shelf'); renderShelf(); }
+  else {
+    show('shelf'); renderShelf();
+    // pick up notebooks the teacher added meanwhile
+    store.listNotebooks().then(list => { notebooks = list; renderShelf(); }).catch(() => {});
+  }
 });
 
 /* ---------- chat ---------- */
@@ -606,7 +611,7 @@ const bgRef = pg => R.page(nb.id, pg.id + '-bg');
 async function ensureBg(pg) {
   if (!pg.bg || (bgCache[pg.id] && bgCache[pg.id].stamp === pg.bg)) return;
   try {
-    const d = await bgRef(pg).get();
+    const d = await (pg.bgSrc ? db.doc(pg.bgSrc) : bgRef(pg)).get();
     if (!d.exists) return;
     const data = d.data();
     const img = new Image(); img.src = data.data; await img.decode();
@@ -644,16 +649,44 @@ function loadPdfJs() {
   });
   return pdfLib;
 }
+// file → list of page pictures (one for an image, one per PDF page)
+async function fileToPics(file, progress) {
+  if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
+    progress('PDF를 여는 중…');
+    const lib = await loadPdfJs();
+    const pdf = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
+    const n = Math.min(pdf.numPages, PDF_MAX_PAGES), pics = [];
+    for (let i = 1; i <= n; i++) {
+      progress(`PDF ${i} / ${n}쪽 바꾸는 중…`);
+      const page = await pdf.getPage(i);
+      const v1 = page.getViewport({ scale: 1 });
+      const vp = page.getViewport({ scale: Math.min(BG_W / v1.width, BG_H / v1.height) });
+      const c = document.createElement('canvas'); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+      await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+      pics.push(toJpeg(c, c.width, c.height));
+    }
+    pics.truncated = pdf.numPages > n;
+    return pics;
+  }
+  if (file.type.startsWith('image/')) {
+    progress('그림을 바꾸는 중…');
+    const im = await loadImageFile(file);
+    return [toJpeg(im.src, im.w, im.h)];
+  }
+  throw new Error('type');
+}
+const picErr = err => err && err.message === 'pdfjs' ? 'PDF 도구를 불러오지 못했어요. 인터넷 연결을 확인해 주세요'
+  : err && err.message === 'type' ? '그림 파일이나 PDF만 넣을 수 있어요' : '파일을 넣지 못했어요';
 async function setPageBg(pg, pic) {
   const stamp = Date.now();
   await bgRef(pg).set({ bgOf: pg.id, data: pic.data, w: pic.w, h: pic.h, at: stamp });
-  pg.bg = stamp;
+  pg.bg = stamp; pg.bgSrc = '';
   const img = new Image(); img.src = pic.data; await img.decode();
   bgCache[pg.id] = { stamp, img, w: pic.w, h: pic.h };
 }
 async function savePageNow(pg) {
   const enc = (pg._dec || []).map(encodeCached);
-  await store.putPage(nb.id, { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H, bg: pg.bg || 0 });
+  await store.putPage(nb.id, { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H, bg: pg.bg || 0, bgSrc: pg.bg ? (pg.bgSrc || '') : '' });
 }
 $('bg-btn').addEventListener('click', async () => {
   const pg = pages[pi]; if (!pg || mode !== 'student') return;
@@ -672,52 +705,101 @@ $('bg-file').addEventListener('change', async e => {
   await flushSave();
   const btn = $('bg-btn'); btn.disabled = true;
   try {
-    if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
-      setSave('PDF를 여는 중…');
-      const lib = await loadPdfJs();
-      const pdf = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
-      const n = Math.min(pdf.numPages, PDF_MAX_PAGES);
-      let target = pages[pi];
-      // an empty page takes the first PDF page; the rest become new pages at the end
-      if (target._dec && target._dec.length || target.bg) target = null;
-      let firstIdx = -1;
-      for (let i = 1; i <= n; i++) {
-        setSave(`PDF ${i} / ${n}쪽 넣는 중…`);
-        const page = await pdf.getPage(i);
-        const v1 = page.getViewport({ scale: 1 });
-        const vp = page.getViewport({ scale: Math.min(BG_W / v1.width, BG_H / v1.height) });
-        const c = document.createElement('canvas'); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
-        await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
-        const pic = toJpeg(c, c.width, c.height);
-        let pg = target;
-        if (!pg) {
-          const last = pages[pages.length - 1];
-          pg = { id: newId(), n: last.n + 1, paper: '', created: today(), strokes: [], _dec: [] };
-          pages.push(pg);
-        }
-        target = null;
-        await setPageBg(pg, pic);
-        await savePageNow(pg);
-        if (firstIdx < 0) firstIdx = pages.indexOf(pg);
+    const pics = await fileToPics(file, t => setSave(t));
+    let target = pages[pi];
+    // an empty page takes the first picture; the rest become new pages at the end
+    if (pics.length > 1 && (target._dec && target._dec.length || target.bg)) target = null;
+    let firstIdx = -1;
+    for (const pic of pics) {
+      let pg = target; target = null;
+      if (!pg) {
+        const last = pages[pages.length - 1];
+        pg = { id: newId(), n: last.n + 1, paper: '', created: today(), strokes: [], _dec: [] };
+        pages.push(pg);
       }
-      nb.pages = pages.length; nb.updated = today(); await store.putNotebook(nb); nb._savedPages = pages.length;
-      showPage(firstIdx);
-      setSave(pdf.numPages > n ? `앞 ${n}쪽만 넣었어요` : `PDF ${n}쪽을 넣었어요`);
-    } else if (file.type.startsWith('image/')) {
-      setSave('그림을 넣는 중…');
-      const im = await loadImageFile(file);
-      const pic = toJpeg(im.src, im.w, im.h);
-      const pg = pages[pi];
       await setPageBg(pg, pic);
       await savePageNow(pg);
-      showPage(pi);
-      setSave('배경을 넣었어요');
-    } else {
-      setSave('그림 파일이나 PDF만 넣을 수 있어요', true);
+      if (firstIdx < 0) firstIdx = pages.indexOf(pg);
     }
-  } catch (err) {
-    setSave(err && err.message === 'pdfjs' ? 'PDF 도구를 불러오지 못했어요. 인터넷 연결을 확인해 주세요' : '배경을 넣지 못했어요', true);
-  } finally { btn.disabled = false; }
+    if (pics.length > 1) { nb.pages = pages.length; nb.updated = today(); await store.putNotebook(nb); nb._savedPages = pages.length; }
+    showPage(firstIdx);
+    setSave(pics.truncated ? `앞 ${pics.length}쪽만 넣었어요` : pics.length > 1 ? `PDF ${pics.length}쪽을 넣었어요` : '배경을 넣었어요');
+  } catch (err) { setSave(picErr(err), true); }
+  finally { btn.disabled = false; }
+});
+
+
+/* ---------- handouts: one worksheet into many students' notebooks ---------- */
+let membersSynced = '';
+async function syncMembers() {
+  // students enrolled before handouts existed get their membership record once
+  if (membersSynced === classId) return;
+  membersSynced = classId;
+  for (const st of students) {
+    if (!st.uid) continue;
+    try { const m = db.doc(`classes/${classId}/members/${st.uid}`); if (!(await m.get()).exists) await m.set({ sid: st.id }); } catch (e) {}
+  }
+}
+const handoutPick = {};
+function renderHandoutKids() {
+  const box = $('h-kids'); box.textContent = '';
+  for (const st of students) {
+    if (handoutPick[st.id] === undefined) handoutPick[st.id] = true;
+    const l = document.createElement('label'); l.className = 'kid-pick';
+    const c = document.createElement('input'); c.type = 'checkbox'; c.checked = handoutPick[st.id];
+    c.addEventListener('change', () => { handoutPick[st.id] = c.checked; });
+    l.append(c, document.createTextNode(`${st.num}번 ${st.name || ''}`));
+    box.append(l);
+  }
+}
+$('h-all').addEventListener('click', () => {
+  const all = students.every(st => handoutPick[st.id]);
+  students.forEach(st => { handoutPick[st.id] = !all; });
+  renderHandoutKids();
+});
+$('handout-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const file = $('h-file').files && $('h-file').files[0];
+  const nbName = $('h-nb').value.trim() || '학습지';
+  const targets = students.filter(st => handoutPick[st.id]);
+  const status = t => { $('h-status').textContent = t; };
+  if (!file) { status('나눠 줄 파일을 골라 주세요.'); return; }
+  if (!targets.length) { status('받을 학생을 골라 주세요.'); return; }
+  $('h-go').disabled = true;
+  try {
+    const pics = await fileToPics(file, status);
+    const hid = newId(), at = Date.now();
+    await db.doc(`classes/${classId}/handouts/${hid}`).set({ title: file.name, nbName, pages: pics.length, created: at });
+    for (let i = 0; i < pics.length; i++) {
+      status(`학습지 저장 중 ${i + 1} / ${pics.length}`);
+      await db.doc(`classes/${classId}/handouts/${hid}/pages/p${i}`).set({ data: pics[i].data, w: pics[i].w, h: pics[i].h });
+    }
+    let done = 0, failed = 0;
+    for (const st of targets) {
+      status(`학생 공책에 넣는 중 ${done + failed + 1} / ${targets.length}`);
+      try {
+        const refs = classRefs(classId, st.id);
+        const books = (await refs.books.get()).docs.map(d => ({ ...d.data(), id: d.id }));
+        let book = books.find(b => b.name === nbName);
+        const now = today();
+        if (!book) book = { id: newId(), name: nbName, color: '#4b5963', paper: '', created: now, updated: now, pages: 0 };
+        const old = (await refs.pages(book.id).orderBy('n').get()).docs.map(d => d.data());
+        let n = old.reduce((m, p) => Math.max(m, p.n || 0), 0);
+        for (let i = 0; i < pics.length; i++) {
+          const id = newId();
+          await refs.page(book.id, id).set({ n: ++n, paper: '', created: now, strokes: [], w: PAGE_W, h: PAGE_H,
+            bg: at, bgSrc: `classes/${classId}/handouts/${hid}/pages/p${i}`, handout: hid });
+        }
+        const { id, ...body } = book;
+        await refs.books.doc(id).set({ ...body, pages: old.length + pics.length, updated: now });
+        done++;
+      } catch (err) { failed++; }
+    }
+    status(failed ? `${done}명에게 넣었고, ${failed}명은 실패했어요. 다시 눌러 주세요.`
+      : `${done}명에게 ${pics.length}쪽을 넣었어요.${pics.truncated ? ' (PDF는 앞 30쪽만)' : ''}`);
+    $('h-file').value = '';
+  } catch (err) { status(picErr(err)); }
+  finally { $('h-go').disabled = false; }
 });
 
 /* ---------- autosave ---------- */
@@ -735,7 +817,7 @@ function flushSave() {
     const body = { strokes: enc, seal, updated: Date.now() };
     job = async () => { await refs.fb(book.id, pg.id).set(body); return sizeOf(enc); };
   } else {
-    const body = { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H, bg: pg.bg || 0 };
+    const body = { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H, bg: pg.bg || 0, bgSrc: pg.bg ? (pg.bgSrc || '') : '' };
     book.updated = today(); book.pages = pages.length;
     job = async () => {
       await store.putPage(book.id, body);
