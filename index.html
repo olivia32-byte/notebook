@@ -119,9 +119,9 @@ input[type=range] { width: 110px; accent-color: var(--accent); }
 .seal-btn[aria-pressed="true"] { background: var(--seal); color: #fff; box-shadow: none; border-color: var(--seal); }
 
 main { flex: 1; min-height: 0; position: relative; padding-block: 12px 8px; }
-#sheet { position: relative; height: 100%; border-radius: 4px; overflow: hidden; background-color: var(--paper); box-shadow: 0 1px 3px rgba(0,0,0,.18); touch-action: none; }
+#sheet { --s: 1; position: relative; margin: 0 auto; border-radius: 4px; overflow: hidden; background-color: var(--paper); box-shadow: 0 1px 3px rgba(0,0,0,.18); touch-action: none; }
 #sheet canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
-.hint { position: absolute; left: 80px; top: 30px; pointer-events: none; font-family: var(--font-title); color: var(--stamp); font-size: 20px; line-height: 48px; }
+.hint { position: absolute; left: calc(80px * var(--s)); top: calc(30px * var(--s)); pointer-events: none; font-family: var(--font-title); color: var(--stamp); font-size: calc(20px * var(--s)); line-height: calc(48px * var(--s)); }
 .datestamp { position: absolute; right: 18px; top: 10px; pointer-events: none; font-family: var(--font-title); color: var(--stamp); font-size: 15px; }
 .seal {
   position: absolute; right: 22px; top: 40px; pointer-events: none; width: 92px; height: 92px; border-radius: 50%;

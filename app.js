@@ -314,8 +314,8 @@ function drawThumb(sid) {
   const g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height);
   const data = thumbData[sid];
   if (data && data.strokes) {
-    const scale = cv.width / Math.max(data.w || 1000, 300);
-    for (const o of data.strokes) drawStroke(g, decode(o), scale);
+    const k = cv.width / PAGE_W;
+    for (const o of data.strokes) drawStroke(g, decode(o), k);
   }
   g.globalCompositeOperation = 'destination-over';
   g.fillStyle = cssVar('--paper'); g.fillRect(0, 0, cv.width, cv.height);
@@ -392,6 +392,10 @@ let tNotebooks = [];
 let color = '#1b1b1b', size = 4, tool = 'pen';
 let palmBlock = true, penSeen = false;
 let current = null, activeId = null, dpr = 1, pendingRedraw = false;
+// Every page is the same sheet of paper, PAGE_W × PAGE_H in page units, scaled to fit the screen whole.
+// Strokes are stored in page units, so a page looks the same upright, sideways, and on the teacher's computer.
+const PAGE_W = 800, PAGE_H = 1080;
+let scale = 1, view = 1; // view = page unit → canvas pixel
 
 function clearPageSubs() { pageSubs.forEach(u => u()); pageSubs = []; }
 
@@ -602,7 +606,7 @@ function flushSave() {
     const body = { strokes: enc, seal, updated: Date.now() };
     job = async () => { await refs.fb(book.id, pg.id).set(body); return sizeOf(enc); };
   } else {
-    const body = { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: Math.round(r.width), h: Math.round(r.height) };
+    const body = { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H };
     book.updated = today(); book.pages = pages.length;
     job = async () => {
       await store.putPage(book.id, body);
@@ -633,9 +637,16 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 /* ---------- drawing ---------- */
 function resize() {
   dpr = window.devicePixelRatio || 1;
-  const r = sheet.getBoundingClientRect();
-  if (!r.width) return;
-  const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+  const host = sheet.parentElement, cs = getComputedStyle(host);
+  const availW = host.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const availH = host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  if (availW <= 0 || availH <= 0) return;
+  scale = Math.min(availW / PAGE_W, availH / PAGE_H);
+  view = dpr * scale;
+  sheet.style.width = (PAGE_W * scale) + 'px';
+  sheet.style.height = (PAGE_H * scale) + 'px';
+  sheet.style.setProperty('--s', scale);
+  const W = Math.round(PAGE_W * view), H = Math.round(PAGE_H * view);
   // the browser bar or keyboard can fire resize without changing the page: keep the canvases then
   if (W === ink.width && H === ink.height) { redraw(); return; }
   for (const c of [ink, live, offBase, offEdit, frame]) { c.width = W; c.height = H; }
@@ -663,16 +674,16 @@ function drawHighlight(c, s, k) {
   for (let i = 1; i < pts.length; i++) c.lineTo(pts[i].x * k, pts[i].y * k);
   c.stroke(); c.restore();
 }
-function seg(c, s, a, b, k = dpr) {
+function seg(c, s, a, b, k = view) {
   c.strokeStyle = inkMode(c, s); c.lineCap = 'round'; c.lineJoin = 'round';
   c.lineWidth = widthFor(s, (a.p + b.p) / 2) * k;
   c.beginPath(); c.moveTo(a.x * k, a.y * k); c.lineTo(b.x * k, b.y * k); c.stroke();
 }
-function dotAt(c, s, a, k = dpr) {
+function dotAt(c, s, a, k = view) {
   c.fillStyle = inkMode(c, s);
   c.beginPath(); c.arc(a.x * k, a.y * k, widthFor(s, a.p) * k / 2, 0, Math.PI * 2); c.fill();
 }
-function drawStroke(c, s, k = dpr) {
+function drawStroke(c, s, k = view) {
   if (s.hl) { drawHighlight(c, s, k); return; }
   const pts = s.pts; if (!pts.length) return;
   if (pts.length === 1) { dotAt(c, s, pts[0], k); return; }
@@ -703,13 +714,13 @@ function paintPaper() {
   const g = pctx;
   g.fillStyle = cssVar('--paper'); g.fillRect(0, 0, W, H);
   g.fillStyle = cssVar('--rule');
-  const step = 48 * dpr, t = Math.max(1, Math.round(dpr));
+  const step = 48 * view, t = Math.max(1, Math.round(dpr));
   if (kind === 'lined') {
-    for (let y = 23 * dpr; y < H; y += step) g.fillRect(0, Math.round(y), W, t);
-    g.fillStyle = cssVar('--margin'); g.fillRect(Math.round(63 * dpr), 0, Math.round(2 * dpr), H);
+    for (let y = 23 * view; y < H; y += step) g.fillRect(0, Math.round(y), W, t);
+    g.fillStyle = cssVar('--margin'); g.fillRect(Math.round(63 * view), 0, Math.max(1, Math.round(2 * view)), H);
   } else if (kind === 'grid') {
-    for (let y = 47 * dpr; y < H; y += step) g.fillRect(0, Math.round(y), W, t);
-    for (let x = 47 * dpr; x < W; x += step) g.fillRect(Math.round(x), 0, t, H);
+    for (let y = 47 * view; y < H; y += step) g.fillRect(0, Math.round(y), W, t);
+    for (let x = 47 * view; x < W; x += step) g.fillRect(Math.round(x), 0, t, H);
   }
 }
 function redraw() {
@@ -728,7 +739,7 @@ function redraw() {
 }
 function pt(e) {
   const r = sheet.getBoundingClientRect();
-  return { x: e.clientX - r.left, y: e.clientY - r.top, p: e.pointerType === 'pen' ? e.pressure : 0.5 };
+  return { x: (e.clientX - r.left) / scale, y: (e.clientY - r.top) / scale, p: e.pointerType === 'pen' ? e.pressure : 0.5 };
 }
 function setStatus(type) {
   if (type === 'pen') { dot.classList.add('pen'); statusText.textContent = palmBlock ? 'S펜 인식됨 · 손 터치 무시 중' : 'S펜 인식됨'; }
@@ -883,6 +894,7 @@ fsBtn.addEventListener('click', () => {
 const onFs = () => { fsBtn.textContent = fsEl() ? '전체 화면 끝내기' : '전체 화면'; setTimeout(resize, 100); };
 document.addEventListener('fullscreenchange', onFs);
 document.addEventListener('webkitfullscreenchange', onFs);
+window.addEventListener('orientationchange', () => setTimeout(resize, 250));
 window.addEventListener('resize', () => { resize(); if (!$('class').hidden) Object.keys(cards).forEach(drawThumb); });
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
