@@ -635,7 +635,11 @@ function resize() {
   dpr = window.devicePixelRatio || 1;
   const r = sheet.getBoundingClientRect();
   if (!r.width) return;
-  for (const c of [ink, live, offBase, offEdit]) { c.width = Math.round(r.width * dpr); c.height = Math.round(r.height * dpr); }
+  const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+  // the browser bar or keyboard can fire resize without changing the page: keep the canvases then
+  if (W === ink.width && H === ink.height) { redraw(); return; }
+  for (const c of [ink, live, offBase, offEdit, frame]) { c.width = W; c.height = H; }
+  resetLayers();
   redraw();
 }
 function widthFor(s, p) {
@@ -674,33 +678,53 @@ function drawStroke(c, s, k = dpr) {
   if (pts.length === 1) { dotAt(c, s, pts[0], k); return; }
   for (let i = 1; i < pts.length; i++) seg(c, s, pts[i - 1], pts[i], k);
 }
+// Layers: paper, the student's ink (base, teacher view), the editable ink, the teacher's marks (overlay).
+// Finished strokes are added to their layer one at a time; a full rebuild happens only after undo,
+// clear, page change or resize. Everything is put together on a hidden frame and copied to the screen
+// in one step, because the low-latency screen canvas shows every half-drawn state (that was the flicker).
+const frame = document.createElement('canvas'), fctx = frame.getContext('2d');
+const paperC = document.createElement('canvas'), pctx = paperC.getContext('2d');
+let paperKey = '';
+const layers = { base: { c: offBase, g: bctx, len: 0, first: null }, edit: { c: offEdit, g: ectx, len: 0, first: null } };
+function syncLayer(L, arr) {
+  let n = arr.length;
+  if (n && arr[n - 1] === current) n--;
+  if (n < L.len || (L.len && arr[0] !== L.first)) { L.g.clearRect(0, 0, L.c.width, L.c.height); L.len = 0; }
+  for (let i = L.len; i < n; i++) drawStroke(L.g, arr[i]);
+  L.g.globalCompositeOperation = 'source-over';
+  L.len = n; L.first = arr[0] || null;
+}
+function resetLayers() { for (const L of Object.values(layers)) { L.g.clearRect(0, 0, L.c.width, L.c.height); L.len = 0; L.first = null; } paperKey = ''; }
 function paintPaper() {
-  const W = ink.width, H = ink.height, kind = (pages[pi] && pages[pi].paper) || '';
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = cssVar('--paper'); ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = cssVar('--rule');
+  const W = frame.width, H = frame.height, kind = (pages[pi] && pages[pi].paper) || '';
+  const key = `${kind}|${W}x${H}`;
+  if (key === paperKey) return;
+  paperKey = key; paperC.width = W; paperC.height = H;
+  const g = pctx;
+  g.fillStyle = cssVar('--paper'); g.fillRect(0, 0, W, H);
+  g.fillStyle = cssVar('--rule');
   const step = 48 * dpr, t = Math.max(1, Math.round(dpr));
   if (kind === 'lined') {
-    for (let y = 23 * dpr; y < H; y += step) ctx.fillRect(0, Math.round(y), W, t);
-    ctx.fillStyle = cssVar('--margin'); ctx.fillRect(Math.round(63 * dpr), 0, Math.round(2 * dpr), H);
+    for (let y = 23 * dpr; y < H; y += step) g.fillRect(0, Math.round(y), W, t);
+    g.fillStyle = cssVar('--margin'); g.fillRect(Math.round(63 * dpr), 0, Math.round(2 * dpr), H);
   } else if (kind === 'grid') {
-    for (let y = 47 * dpr; y < H; y += step) ctx.fillRect(0, Math.round(y), W, t);
-    for (let x = 47 * dpr; x < W; x += step) ctx.fillRect(Math.round(x), 0, t, H);
+    for (let y = 47 * dpr; y < H; y += step) g.fillRect(0, Math.round(y), W, t);
+    for (let x = 47 * dpr; x < W; x += step) g.fillRect(Math.round(x), 0, t, H);
   }
 }
 function redraw() {
   pendingRedraw = false;
-  bctx.clearRect(0, 0, offBase.width, offBase.height);
-  for (const s of base) drawStroke(bctx, s);
-  bctx.globalCompositeOperation = 'source-over';
-  ectx.clearRect(0, 0, offEdit.width, offEdit.height);
-  for (const s of strokes) drawStroke(ectx, s);
-  ectx.globalCompositeOperation = 'source-over';
+  syncLayer(layers.base, base);
+  syncLayer(layers.edit, strokes);
   paintPaper();
-  if (base.length) ctx.drawImage(offBase, 0, 0);
-  ctx.drawImage(offEdit, 0, 0);
-  for (const s of overlay) drawStroke(ctx, s);
+  fctx.globalCompositeOperation = 'source-over';
+  fctx.drawImage(paperC, 0, 0);
+  if (base.length) fctx.drawImage(offBase, 0, 0);
+  fctx.drawImage(offEdit, 0, 0);
+  for (const s of overlay) drawStroke(fctx, s);
+  fctx.globalCompositeOperation = 'source-over';
   ctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(frame, 0, 0);
 }
 function pt(e) {
   const r = sheet.getBoundingClientRect();
