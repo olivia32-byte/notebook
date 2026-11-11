@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>두암 디지털 공책</title>
+<meta name="theme-color" content="#1f6fb2">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=Noto+Sans+KR:wght@400;600&display=swap">
+<style>
+/* Layout: four views. Start (pick student or teacher) → student bookshelf → notebook; teacher → class grid of live page previews → a student's notebook with a red-pen feedback layer. Paper stays paper-white in both themes. */
+:root {
+  --bg: #e9eef2;
+  --bar: #ffffff;
+  --fg: #1d2a33;
+  --muted: #5d6d78;
+  --line: #d3dce3;
+  --accent: #1f6fb2;
+  --danger: #c0392b;
+  --live: #2e9b57;
+  --seal: #d33a2c;
+  --paper: #fffdf7;
+  --rule: #b9d3ea;
+  --margin: #f0a6a6;
+  --stamp: #8aa0b2;
+  --font-ui: "Noto Sans KR", system-ui, sans-serif;
+  --font-title: "Gowun Dodum", "Noto Sans KR", sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #11181d; --bar: #1a232a; --fg: #e3eaef; --muted: #9aaab5; --line: #2c3a44; --accent: #6db3ee; --danger: #f08a7e; --live: #5cc985; color-scheme: dark } }
+:root[data-theme="dark"] { --bg: #11181d; --bar: #1a232a; --fg: #e3eaef; --muted: #9aaab5; --line: #2c3a44; --accent: #6db3ee; --danger: #f08a7e; --live: #5cc985; color-scheme: dark }
+
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); box-sizing: border-box;
+  background: var(--bg); color: var(--fg); font-family: var(--font-ui);
+  display: flex; flex-direction: column; overflow: hidden;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+.gutter {
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+h1 { font-family: var(--font-title); font-size: 19px; margin: 0; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+h2 { font-size: 15px; margin: 0 0 10px; font-weight: 600; }
+button, input[type=text], input[type=number], select {
+  font: inherit; font-size: 14px; color: var(--fg); background: transparent;
+  border: 1px solid var(--line); border-radius: 8px; min-height: 40px; padding: 0 12px;
+}
+button { cursor: pointer; }
+input[type=text], input[type=number], select { background: var(--bar); min-width: 0; -webkit-user-select: text; user-select: text; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--bar); font-weight: 600; }
+button:disabled { opacity: .4; cursor: default; }
+.small { font-size: 12px; color: var(--muted); }
+.err-text { color: var(--danger); font-size: 13px; min-height: 1em; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.topbar { background: var(--bar); border-bottom: 1px solid var(--line); padding-block: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.topbar .grow { flex: 1; min-width: 0; }
+.topbar p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+.body { padding-block: 20px 40px; display: grid; gap: 24px; max-width: 1100px; }
+.empty { color: var(--muted); font-size: 14px; padding: 18px; border: 1px dashed var(--line); border-radius: 10px; }
+
+/* ---------- start ---------- */
+.roles { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; max-width: 760px; }
+.role { background: var(--bar); border: 1px solid var(--line); border-radius: 12px; padding: 18px; display: grid; gap: 12px; align-content: start; }
+.role h2 { font-family: var(--font-title); font-weight: 400; font-size: 22px; margin: 0; }
+.role label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.role .two { display: grid; grid-template-columns: 1fr 2fr; gap: 8px; }
+
+/* ---------- bookshelf ---------- */
+.books { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 18px; }
+.book {
+  position: relative; aspect-ratio: 3 / 4; max-width: 100%; border: 0; border-radius: 4px 10px 10px 4px;
+  padding: 16px 14px 14px 26px; text-align: left; color: #fff; display: flex; flex-direction: column; justify-content: space-between;
+  box-shadow: 0 2px 6px rgba(0,0,0,.18), inset 8px 0 0 rgba(0,0,0,.16);
+}
+.book .label-box { background: #fffdf7; color: #1d2a33; border-radius: 4px; padding: 8px 10px; font-family: var(--font-title); font-size: 20px; line-height: 1.2; word-break: keep-all; }
+.book .meta { font-size: 12px; opacity: .92; line-height: 1.5; }
+.new-form { display: grid; gap: 12px; background: var(--bar); border: 1px solid var(--line); border-radius: 12px; padding: 16px; max-width: 560px; }
+.new-form input[type=text] { flex: 1 1 200px; }
+.cover { width: 34px; min-height: 34px; height: 34px; padding: 0; border-radius: 6px; border: 3px solid var(--bar); box-shadow: 0 0 0 1px var(--line); }
+.cover[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--accent); }
+
+/* ---------- class (teacher) ---------- */
+.kids { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; }
+.kid { background: var(--bar); border: 1px solid var(--line); border-radius: 10px; padding: 0; overflow: hidden; text-align: left; display: grid; }
+.kid canvas { width: 100%; aspect-ratio: 4 / 3; max-width: 100%; display: block; background: var(--paper); border-bottom: 1px solid var(--line); }
+.kid .info { padding: 10px 12px; display: grid; gap: 3px; }
+.kid .name { font-weight: 600; font-size: 15px; }
+.kid .where { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kid .when { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.kid .when.on { color: var(--live); font-weight: 600; }
+.kid .when.on::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--live); }
+.pill { font-size: 11px; font-weight: 600; color: var(--bar); background: var(--danger); border-radius: 999px; padding: 1px 8px; }
+.code-box { font-family: var(--font-title); font-size: 18px; border: 1px dashed var(--line); border-radius: 8px; padding: 4px 10px; }
+
+/* ---------- notebook ---------- */
+#book { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+header.tools { background: var(--bar); border-bottom: 1px solid var(--line); padding-block: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
+.group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.label { font-size: 12px; color: var(--muted); letter-spacing: .02em; }
+.swatch { width: 34px; min-height: 34px; height: 34px; border-radius: 50%; padding: 0; border: 3px solid var(--bar); box-shadow: 0 0 0 1px var(--line); }
+.swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--accent); }
+.size { width: 40px; padding: 0; display: grid; place-items: center; }
+.size i { display: block; border-radius: 50%; background: var(--fg); }
+input[type=range] { width: 110px; accent-color: var(--accent); }
+.status { margin-left: auto; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: #9aa5ad; }
+.dot.pen { background: var(--live); }
+.book-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.teacher-bar { background: var(--bar); border-bottom: 1px solid var(--line); padding-block: 8px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.seal-btn { border-color: var(--seal); color: var(--seal); font-family: var(--font-title); }
+.seal-btn[aria-pressed="true"] { background: var(--seal); color: #fff; box-shadow: none; border-color: var(--seal); }
+
+main { flex: 1; min-height: 0; position: relative; padding-block: 12px 8px; }
+#sheet { position: relative; height: 100%; border-radius: 4px; overflow: hidden; background-color: var(--paper); box-shadow: 0 1px 3px rgba(0,0,0,.18); touch-action: none; }
+#sheet canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+.hint { position: absolute; left: 80px; top: 30px; pointer-events: none; font-family: var(--font-title); color: var(--stamp); font-size: 20px; line-height: 48px; }
+.datestamp { position: absolute; right: 18px; top: 10px; pointer-events: none; font-family: var(--font-title); color: var(--stamp); font-size: 15px; }
+.seal {
+  position: absolute; right: 22px; top: 40px; pointer-events: none; width: 92px; height: 92px; border-radius: 50%;
+  border: 3px solid var(--seal); color: var(--seal); display: grid; place-items: center; text-align: center;
+  font-family: var(--font-title); font-size: 17px; line-height: 1.15; padding: 8px; transform: rotate(-12deg); opacity: .85; word-break: keep-all;
+  box-shadow: inset 0 0 0 3px var(--paper), inset 0 0 0 5px var(--seal);
+}
+
+footer.pages { padding-block: 0 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pageno { font-variant-numeric: tabular-nums; min-width: 72px; text-align: center; font-size: 14px; }
+.save { margin-left: auto; font-size: 13px; color: var(--muted); }
+.save.err { color: var(--danger); }
+
+/* chat */
+#chat {
+  position: absolute; right: max(24px, calc(env(safe-area-inset-right, 0px) + 24px)); bottom: 16px; width: min(340px, calc(100% - 48px)); max-height: 70%;
+  background: var(--bar); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.18);
+  display: flex; flex-direction: column; overflow: hidden; z-index: 5;
+}
+#chat .head { display: flex; align-items: center; justify-content: space-between; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--line); font-weight: 600; font-size: 14px; }
+#chat .msgs { flex: 1; min-height: 80px; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.msg { max-width: 85%; padding: 8px 11px; border-radius: 12px; font-size: 14px; line-height: 1.45; word-break: break-word; -webkit-user-select: text; user-select: text; }
+.msg.mine { align-self: flex-end; background: var(--accent); color: var(--bar); border-bottom-right-radius: 4px; }
+.msg.theirs { align-self: flex-start; background: var(--bg); border-bottom-left-radius: 4px; }
+.msg time { display: block; font-size: 11px; opacity: .75; margin-top: 2px; }
+#chat form { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
+#chat form input { flex: 1; }
+.badge { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 12px; line-height: 20px; text-align: center; margin-left: 4px; }
+
+#toast {
+  position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+  background: var(--fg); color: var(--bg); padding: 10px 18px; border-radius: 999px; font-size: 14px; z-index: 20; max-width: calc(100% - 32px);
+}
+@media (max-width: 700px) { .status { margin-left: 0; } input[type=range] { width: 80px; } }
+</style>
+
+</head>
+<body>
+<style>
+/* additions for the server version */
+.cards-print { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.pin-card { border: 1px dashed var(--line); border-radius: 10px; padding: 10px 12px; background: var(--bar); display: grid; gap: 4px; }
+.pin-card b { font-size: 15px; }
+.pin-card .pin { font-family: ui-monospace, Menlo, monospace; font-size: 20px; letter-spacing: .12em; font-variant-numeric: tabular-nums; }
+.pin-card .cc { font-size: 12px; color: var(--muted); }
+.panel { background: var(--bar); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 12px; }
+.class-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.class-item { text-align: left; padding: 14px; display: grid; gap: 4px; min-height: 72px; background: var(--bar); }
+.class-item b { font-family: var(--font-title); font-weight: 400; font-size: 20px; }
+.google { display: inline-flex; align-items: center; gap: 8px; justify-content: center; }
+.boot { flex: 1; display: grid; place-items: center; color: var(--muted); padding: 24px; text-align: center; }
+</style>
+
+<div id="boot" class="boot">불러오는 중이에요…</div>
+
+<!-- ===== Start ===== -->
+<section id="start" class="scroll" hidden>
+  <div class="topbar gutter"><div class="grow"><h1>두암 디지털 공책</h1><p>누가 쓰나요?</p></div></div>
+  <div class="body gutter">
+    <div class="roles">
+      <form class="role" id="student-form">
+        <h2>학생</h2>
+        <label>반 코드 <input type="text" id="s-code" placeholder="선생님이 알려 준 6글자" maxlength="6" autocomplete="off" autocapitalize="characters"></label>
+        <div class="two">
+          <label>번호 <input type="number" id="s-num" min="1" max="99" inputmode="numeric"></label>
+          <label>비밀번호 <input type="number" id="s-pin" inputmode="numeric" placeholder="6자리"></label>
+        </div>
+        <button type="submit" class="primary" id="s-go">내 공책 열기</button>
+        <div class="err-text" id="s-err"></div>
+      </form>
+      <div class="role">
+        <h2>선생님</h2>
+        <p class="small">학교 Google 계정으로 로그인해요. 반을 만들고 학생을 등록하면 학생마다 비밀번호가 만들어져요.</p>
+        <button class="primary google" id="t-login">Google 계정으로 로그인</button>
+        <div class="err-text" id="t-err"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== Teacher: my classes ===== -->
+<section id="classes" class="scroll" hidden>
+  <div class="topbar gutter">
+    <div class="grow"><h1>내 반</h1><p id="teacher-who"></p></div>
+    <button class="logout">로그아웃</button>
+  </div>
+  <div class="body gutter">
+    <div>
+      <div class="class-list" id="class-list"></div>
+      <div class="empty" id="class-empty" hidden>아직 만든 반이 없어요. 아래에서 반을 만들어 주세요.</div>
+    </div>
+    <form class="panel" id="class-form" style="max-width:520px">
+      <h2>새 반 만들기</h2>
+      <div class="row"><input type="text" id="class-name" maxlength="20" placeholder="예: 3학년 2반" style="flex:1 1 200px" aria-label="반 이름"><button type="submit" class="primary">만들기</button></div>
+      <p class="small">반을 만들면 6글자 반 코드가 생겨요. 학생은 반 코드, 번호, 비밀번호로 들어와요.</p>
+      <div class="err-text" id="class-err"></div>
+    </form>
+  </div>
+</section>
+
+<!-- ===== Bookshelf (student) ===== -->
+<section id="shelf" class="scroll" hidden>
+  <div class="topbar gutter">
+    <div class="grow"><h1 id="shelf-title">내 공책장</h1><p id="shelf-sub">과목마다 공책을 따로 만들어 차곡차곡 모아요</p></div>
+    <button class="logout">로그아웃</button>
+  </div>
+  <div class="body gutter">
+    <div>
+      <h2>내 공책</h2>
+      <div class="books" id="books"></div>
+      <div class="empty" id="shelf-empty" hidden>아직 공책이 없어요. 아래에서 첫 공책을 만들어 보세요.</div>
+      <div class="empty" id="shelf-loading">공책을 불러오는 중이에요…</div>
+    </div>
+    <div>
+      <h2>새 공책 만들기</h2>
+      <form class="new-form" id="new-form">
+        <div class="row">
+          <input type="text" id="nb-name" maxlength="20" placeholder="공책 이름 (예: 수학 공책)" aria-label="공책 이름">
+          <button type="submit" class="primary" id="nb-create">만들기</button>
+        </div>
+        <div class="row" id="quick">
+          <span class="small">빠르게:</span>
+          <button type="button" data-q="국어">국어</button>
+          <button type="button" data-q="수학">수학</button>
+          <button type="button" data-q="사회">사회</button>
+          <button type="button" data-q="과학">과학</button>
+          <button type="button" data-q="일기">일기</button>
+        </div>
+        <div class="row" role="group" aria-label="표지 색">
+          <span class="small">표지 색:</span>
+          <button type="button" class="cover" data-c="#d8574a" style="background:#d8574a" aria-label="빨강 표지" aria-pressed="true"></button>
+          <button type="button" class="cover" data-c="#e9973a" style="background:#e9973a" aria-label="주황 표지"></button>
+          <button type="button" class="cover" data-c="#3f9a5b" style="background:#3f9a5b" aria-label="초록 표지"></button>
+          <button type="button" class="cover" data-c="#2f76b9" style="background:#2f76b9" aria-label="파랑 표지"></button>
+          <button type="button" class="cover" data-c="#7c55b8" style="background:#7c55b8" aria-label="보라 표지"></button>
+          <button type="button" class="cover" data-c="#4b5963" style="background:#4b5963" aria-label="회색 표지"></button>
+        </div>
+        <div class="row" id="papers-new" role="group" aria-label="종이">
+          <span class="small">종이:</span>
+          <button type="button" data-p="lined" aria-pressed="true">줄공책</button>
+          <button type="button" data-p="grid">칸공책</button>
+          <button type="button" data-p="">무지</button>
+        </div>
+      </form>
+    </div>
+    <p class="small" id="store-note"></p>
+  </div>
+</section>
+
+<!-- ===== Class (teacher) ===== -->
+<section id="class" class="scroll" hidden>
+  <div class="topbar gutter">
+    <div class="grow"><h1 id="class-title">우리 반</h1><p>학생이 쓰는 공책이 실시간으로 보여요. 눌러서 피드백을 남겨요.</p></div>
+    <span class="small">반 코드</span><span class="code-box" id="class-code"></span>
+    <button id="to-classes">내 반 목록</button>
+  </div>
+  <div class="body gutter">
+    <div class="kids" id="kids"></div>
+    <div class="empty" id="kids-empty">아직 등록된 학생이 없어요. 아래에서 학생을 등록해 주세요.</div>
+    <form class="panel" id="enroll-form" style="max-width:620px">
+      <h2>학생 등록</h2>
+      <div class="row">
+        <input type="number" id="e-num" min="1" max="99" placeholder="번호" style="width:90px" aria-label="번호">
+        <input type="text" id="e-name" maxlength="10" placeholder="이름 또는 별명" style="flex:1 1 160px" aria-label="이름">
+        <button type="submit" class="primary" id="e-go">등록</button>
+      </div>
+      <p class="small">등록하면 6자리 비밀번호가 만들어져요. 개인정보를 줄이려면 실명 대신 별명을 써도 돼요.</p>
+      <div class="err-text" id="e-err"></div>
+    </form>
+    <div class="panel">
+      <div class="row" style="justify-content:space-between"><h2 style="margin:0">학생 비밀번호 카드</h2><button id="toggle-pins">보기</button></div>
+      <div id="pins" hidden>
+        <p class="small">잘라서 학생에게 나눠 주세요. 비밀번호를 잊으면 "새 비밀번호"를 눌러 다시 만들 수 있어요.</p>
+        <div class="cards-print" id="pin-cards"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== Notebook ===== -->
+<section id="book" hidden>
+  <header class="tools gutter">
+    <div class="book-title">
+      <button id="back">← 공책장</button>
+      <h1 id="book-name">공책</h1>
+    </div>
+    <div class="group" role="group" aria-label="색깔">
+      <button class="swatch" id="c-black" data-color="#1b1b1b" style="background:#1b1b1b" aria-label="검정" aria-pressed="true"></button>
+      <button class="swatch" id="c-red" data-color="#d93a3a" style="background:#d93a3a" aria-label="빨강"></button>
+      <button class="swatch" id="c-blue" data-color="#1f63c6" style="background:#1f63c6" aria-label="파랑"></button>
+      <button class="swatch" id="c-green" data-color="#22914c" style="background:#22914c" aria-label="초록"></button>
+      <button class="swatch" id="c-orange" data-color="#ee8a14" style="background:#ee8a14" aria-label="주황"></button>
+      <button class="swatch" id="c-purple" data-color="#8644c2" style="background:#8644c2" aria-label="보라"></button>
+      <button class="swatch" id="c-yellow" data-color="#f5d000" style="background:#f5d000" aria-label="노랑"></button>
+    </div>
+    <div class="group" role="group" aria-label="굵기">
+      <button class="size" data-size="2" aria-label="가늘게"><i style="width:4px;height:4px"></i></button>
+      <button class="size" data-size="4" aria-label="보통" aria-pressed="true"><i style="width:8px;height:8px"></i></button>
+      <button class="size" data-size="9" aria-label="굵게"><i style="width:14px;height:14px"></i></button>
+      <input type="range" id="size-range" min="1" max="20" value="4" aria-label="굵기 직접 조절">
+    </div>
+    <div class="group">
+      <button id="tool-pen" aria-pressed="true">펜</button>
+      <button id="tool-hl" aria-pressed="false">형광펜</button>
+      <button id="tool-eraser" aria-pressed="false">지우개</button>
+      <button id="undo">되돌리기</button>
+      <button id="clear">전체 지우기</button>
+    </div>
+    <div class="group">
+      <button id="paper" aria-label="종이 바꾸기">줄공책</button>
+      <button id="palm" aria-pressed="true">손바닥 차단</button>
+      <button id="fs">전체 화면</button>
+    </div>
+    <div class="status" aria-live="polite"><span class="dot" id="dot"></span><span id="status-text">S펜으로 써 보세요</span></div>
+  </header>
+
+  <div class="teacher-bar gutter" id="teacher-bar" hidden>
+    <div class="group">
+      <span class="label">공책</span>
+      <select id="t-notebook" aria-label="학생 공책 고르기"></select>
+    </div>
+    <div class="group" role="group" aria-label="도장">
+      <span class="label">도장</span>
+      <button class="seal-btn" data-seal="참 잘했어요">참 잘했어요</button>
+      <button class="seal-btn" data-seal="멋져요">멋져요</button>
+      <button class="seal-btn" data-seal="정성껏 썼어요">정성껏 썼어요</button>
+      <button class="seal-btn" data-seal="다시 해 볼까요?">다시 해 볼까요?</button>
+    </div>
+    <span class="small">선생님이 쓴 글씨는 학생 공책 위에 따로 겹쳐 보이고, 학생은 지울 수 없어요.</span>
+  </div>
+
+  <main class="gutter">
+    <div id="sheet">
+      <canvas id="ink"></canvas>
+      <canvas id="live"></canvas>
+      <div class="hint" id="hint">오늘 배운 내용을 써 보세요.</div>
+      <div class="datestamp" id="datestamp"></div>
+      <div class="seal" id="seal" hidden></div>
+    </div>
+    <div id="chat" hidden>
+      <div class="head"><span id="chat-title">선생님과 이야기</span><button id="chat-close" aria-label="대화 닫기">닫기</button></div>
+      <div class="msgs" id="msgs"></div>
+      <form id="chat-form"><input type="text" id="chat-input" maxlength="300" placeholder="메시지 쓰기" aria-label="메시지"><button type="submit" class="primary">보내기</button></form>
+    </div>
+  </main>
+
+  <footer class="pages gutter">
+    <button id="prev">◀ 앞 쪽</button>
+    <span class="pageno" id="pageno">1 / 1쪽</span>
+    <button id="next">다음 쪽 ▶</button>
+    <button id="add-page">+ 새 페이지</button>
+    <button id="chat-open">대화<span class="badge" id="chat-badge" hidden>0</span></button>
+    <span class="save" id="save" aria-live="polite">저장됨</span>
+  </footer>
+</section>
+
+<div id="toast" role="status" hidden></div>
+
+<script src="config.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
