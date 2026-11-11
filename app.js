@@ -440,6 +440,7 @@ async function loadTeacherNotebook(n, pgId) {
   if (!pages.length) { showEmptyTeacher(); return; }
   const i = pages.findIndex(p => p.id === pgId);
   showPage(i >= 0 ? i : pages.length - 1);
+  setSave('');
 }
 function showEmptyTeacher() {
   clearPageSubs(); strokes = []; base = []; overlay = []; seal = ''; ready = false;
@@ -455,6 +456,7 @@ function setEditorChrome() {
   $('teacher-bar').hidden = !t;
   $('add-page').hidden = t;
   $('paper').hidden = t;
+  $('bg-btn').hidden = t;
   $('chat').hidden = true;
   $('chat-title').textContent = t ? '학생과 이야기' : '선생님과 이야기';
   hint.textContent = '오늘 배운 내용을 써 보세요.';
@@ -473,10 +475,12 @@ function showPage(i) {
   $('prev').disabled = pi === 0;
   $('next').disabled = pi === pages.length - 1;
   overlay = []; base = []; seal = ''; msgs = []; chatSeenCount = 0; renderChat();
+  $('bg-btn').textContent = pg.bg ? '배경 빼기' : '배경 넣기';
+  ensureBg(pg);
   if (mode === 'student') {
     if (!pg._dec) pg._dec = (pg.strokes || []).map(decode);
     strokes = pg._dec; ready = true;
-    hint.hidden = strokes.length > 0;
+    hint.hidden = strokes.length > 0 || !!pg.bg;
     touchStudent({ current: { nb: nb.id, nbName: nb.name, pg: pg.id, n: pg.n }, updated: Date.now() });
     let first = true, lastUpdated = null;
     pageSubs.push(R.fb(nb.id, pg.id).onSnapshot(d => {
@@ -496,7 +500,8 @@ function showPage(i) {
       if (!d.exists) return;
       const data = d.data();
       base = decodeMore(base, data.strokes || []);
-      if (data.paper !== undefined && data.paper !== pg.paper) { pg.paper = data.paper; sheet.className = pg.paper; }
+      if (data.paper !== undefined && data.paper !== pg.paper) { pg.paper = data.paper; sheet.className = pg.paper; paperKey = ''; }
+      if ((data.bg || 0) !== (pg.bg || 0)) { pg.bg = data.bg || 0; paperKey = ''; ensureBg(pg); }
       safeRedraw();
     }, () => {}));
     R.fb(nb.id, pg.id).get().then(d => {
@@ -591,6 +596,130 @@ $('chat-form').addEventListener('submit', async e => {
   } catch (err) { toast('메시지를 보내지 못했어요'); $('chat-input').value = text; }
 });
 
+
+/* ---------- background picture or PDF ---------- */
+// Pictures are shrunk to the page and saved as JPEG (about 150–300 KB) in a separate document
+// next to the page ("<page id>-bg"), so the page itself stays small and pages without one cost nothing.
+const BG_W = 1200, BG_H = Math.round(BG_W * PAGE_H / PAGE_W), BG_MAX = 850000, PDF_MAX_PAGES = 30;
+const bgCache = {};
+const bgRef = pg => R.page(nb.id, pg.id + '-bg');
+async function ensureBg(pg) {
+  if (!pg.bg || (bgCache[pg.id] && bgCache[pg.id].stamp === pg.bg)) return;
+  try {
+    const d = await bgRef(pg).get();
+    if (!d.exists) return;
+    const data = d.data();
+    const img = new Image(); img.src = data.data; await img.decode();
+    bgCache[pg.id] = { stamp: pg.bg, img, w: data.w, h: data.h };
+    if (pages[pi] === pg) { paperKey = ''; safeRedraw(); }
+  } catch (e) { /* the page still works without its picture */ }
+}
+function toJpeg(src, sw, sh) {
+  const k = Math.min(BG_W / sw, BG_H / sh, 1);
+  const w = Math.max(1, Math.round(sw * k)), h = Math.max(1, Math.round(sh * k));
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d'); g.fillStyle = '#ffffff'; g.fillRect(0, 0, w, h); g.drawImage(src, 0, 0, w, h);
+  let q = 0.8, data = c.toDataURL('image/jpeg', q);
+  while (data.length > BG_MAX && q > 0.3) { q -= 0.15; data = c.toDataURL('image/jpeg', q); }
+  if (data.length > BG_MAX) throw new Error('too-big');
+  return { data, w, h };
+}
+async function loadImageFile(file) {
+  if (window.createImageBitmap) {
+    try { const b = await createImageBitmap(file, { imageOrientation: 'from-image' }); return { src: b, w: b.width, h: b.height }; } catch (e) {}
+  }
+  const url = URL.createObjectURL(file);
+  try { const img = new Image(); img.src = url; await img.decode(); return { src: img, w: img.naturalWidth, h: img.naturalHeight }; }
+  finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+}
+let pdfLib = null;
+function loadPdfJs() {
+  if (pdfLib) return pdfLib;
+  pdfLib = new Promise((ok, fail) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    sc.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; ok(window.pdfjsLib); };
+    sc.onerror = () => { pdfLib = null; fail(new Error('pdfjs')); };
+    document.head.append(sc);
+  });
+  return pdfLib;
+}
+async function setPageBg(pg, pic) {
+  const stamp = Date.now();
+  await bgRef(pg).set({ bgOf: pg.id, data: pic.data, w: pic.w, h: pic.h, at: stamp });
+  pg.bg = stamp;
+  const img = new Image(); img.src = pic.data; await img.decode();
+  bgCache[pg.id] = { stamp, img, w: pic.w, h: pic.h };
+}
+async function savePageNow(pg) {
+  const enc = (pg._dec || []).map(encodeCached);
+  await store.putPage(nb.id, { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H, bg: pg.bg || 0 });
+}
+$('bg-btn').addEventListener('click', async () => {
+  const pg = pages[pi]; if (!pg || mode !== 'student') return;
+  if (!pg.bg) { $('bg-file').value = ''; $('bg-file').click(); return; }
+  const b = $('bg-btn');
+  if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = '한 번 더 누르면 빠져요'; setTimeout(() => { b.dataset.armed = ''; if (pages[pi] === pg) b.textContent = pg.bg ? '배경 빼기' : '배경 넣기'; }, 2500); return; }
+  b.dataset.armed = '';
+  pg.bg = 0; delete bgCache[pg.id]; paperKey = ''; redraw(); b.textContent = '배경 넣기';
+  hint.hidden = strokes.length > 0;
+  markDirty();
+  bgRef(pg).delete().catch(() => {});
+});
+$('bg-file').addEventListener('change', async e => {
+  const file = e.target.files && e.target.files[0];
+  if (!file || !nb) return;
+  await flushSave();
+  const btn = $('bg-btn'); btn.disabled = true;
+  try {
+    if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
+      setSave('PDF를 여는 중…');
+      const lib = await loadPdfJs();
+      const pdf = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
+      const n = Math.min(pdf.numPages, PDF_MAX_PAGES);
+      let target = pages[pi];
+      // an empty page takes the first PDF page; the rest become new pages at the end
+      if (target._dec && target._dec.length || target.bg) target = null;
+      let firstIdx = -1;
+      for (let i = 1; i <= n; i++) {
+        setSave(`PDF ${i} / ${n}쪽 넣는 중…`);
+        const page = await pdf.getPage(i);
+        const v1 = page.getViewport({ scale: 1 });
+        const vp = page.getViewport({ scale: Math.min(BG_W / v1.width, BG_H / v1.height) });
+        const c = document.createElement('canvas'); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+        await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+        const pic = toJpeg(c, c.width, c.height);
+        let pg = target;
+        if (!pg) {
+          const last = pages[pages.length - 1];
+          pg = { id: newId(), n: last.n + 1, paper: '', created: today(), strokes: [], _dec: [] };
+          pages.push(pg);
+        }
+        target = null;
+        await setPageBg(pg, pic);
+        await savePageNow(pg);
+        if (firstIdx < 0) firstIdx = pages.indexOf(pg);
+      }
+      nb.pages = pages.length; nb.updated = today(); await store.putNotebook(nb); nb._savedPages = pages.length;
+      showPage(firstIdx);
+      setSave(pdf.numPages > n ? `앞 ${n}쪽만 넣었어요` : `PDF ${n}쪽을 넣었어요`);
+    } else if (file.type.startsWith('image/')) {
+      setSave('그림을 넣는 중…');
+      const im = await loadImageFile(file);
+      const pic = toJpeg(im.src, im.w, im.h);
+      const pg = pages[pi];
+      await setPageBg(pg, pic);
+      await savePageNow(pg);
+      showPage(pi);
+      setSave('배경을 넣었어요');
+    } else {
+      setSave('그림 파일이나 PDF만 넣을 수 있어요', true);
+    }
+  } catch (err) {
+    setSave(err && err.message === 'pdfjs' ? 'PDF 도구를 불러오지 못했어요. 인터넷 연결을 확인해 주세요' : '배경을 넣지 못했어요', true);
+  } finally { btn.disabled = false; }
+});
+
 /* ---------- autosave ---------- */
 let dirty = false, saveTimer = null, saving = Promise.resolve(), lastTouch = 0;
 function setSave(text, err) { const el = $('save'); el.textContent = text; el.classList.toggle('err', !!err); }
@@ -606,7 +735,7 @@ function flushSave() {
     const body = { strokes: enc, seal, updated: Date.now() };
     job = async () => { await refs.fb(book.id, pg.id).set(body); return sizeOf(enc); };
   } else {
-    const body = { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H };
+    const body = { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H, bg: pg.bg || 0 };
     book.updated = today(); book.pages = pages.length;
     job = async () => {
       await store.putPage(book.id, body);
@@ -708,19 +837,28 @@ function syncLayer(L, arr) {
 function resetLayers() { for (const L of Object.values(layers)) { L.g.clearRect(0, 0, L.c.width, L.c.height); L.len = 0; L.first = null; } paperKey = ''; }
 function paintPaper() {
   const W = frame.width, H = frame.height, kind = (pages[pi] && pages[pi].paper) || '';
-  const key = `${kind}|${W}x${H}`;
+  const bgPg = pages[pi], bg = bgPg && bgPg.bg ? bgCache[bgPg.id] : null;
+  const key = `${kind}|${W}x${H}|${bg && bg.stamp === bgPg.bg ? bg.stamp : 0}`;
   if (key === paperKey) return;
   paperKey = key; paperC.width = W; paperC.height = H;
   const g = pctx;
   g.fillStyle = cssVar('--paper'); g.fillRect(0, 0, W, H);
   g.fillStyle = cssVar('--rule');
   const step = 48 * view, t = Math.max(1, Math.round(dpr));
-  if (kind === 'lined') {
+  const hasBg = bg && bg.stamp === bgPg.bg;
+  if (hasBg) { /* a worksheet brings its own lines */ }
+  else if (kind === 'lined') {
     for (let y = 23 * view; y < H; y += step) g.fillRect(0, Math.round(y), W, t);
     g.fillStyle = cssVar('--margin'); g.fillRect(Math.round(63 * view), 0, Math.max(1, Math.round(2 * view)), H);
   } else if (kind === 'grid') {
     for (let y = 47 * view; y < H; y += step) g.fillRect(0, Math.round(y), W, t);
     for (let x = 47 * view; x < W; x += step) g.fillRect(Math.round(x), 0, t, H);
+  }
+  if (bg && bg.stamp === bgPg.bg) {
+    // fit the picture inside the page, centred across and starting at the top
+    const k = Math.min(PAGE_W / bg.w, PAGE_H / bg.h);
+    const dw = bg.w * k, dh = bg.h * k;
+    g.drawImage(bg.img, Math.round((PAGE_W - dw) / 2 * view), 0, Math.round(dw * view), Math.round(dh * view));
   }
 }
 function redraw() {
