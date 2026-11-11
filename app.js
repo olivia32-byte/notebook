@@ -551,6 +551,27 @@ function renderChat() {
 }
 $('chat-open').addEventListener('click', () => { $('chat').hidden = !$('chat').hidden; chatSeenCount = msgs.length; renderChat(); if (!$('chat').hidden) $('chat-input').focus(); });
 $('chat-close').addEventListener('click', () => { $('chat').hidden = true; });
+// on-screen keyboard: lift the chat box above it so the typing line stays visible
+function placeChat() {
+  const vv = window.visualViewport, chat = $('chat');
+  if (!vv) return;
+  const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+  if (kb > 80 && !chat.hidden) {
+    chat.style.position = 'fixed';
+    chat.style.top = 'auto';
+    chat.style.bottom = (kb + 8) + 'px';
+    chat.style.maxHeight = Math.max(160, vv.height - 24) + 'px';
+  } else {
+    chat.style.position = chat.style.top = chat.style.bottom = chat.style.maxHeight = '';
+  }
+  $('msgs').scrollTop = $('msgs').scrollHeight;
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', placeChat);
+  window.visualViewport.addEventListener('scroll', placeChat);
+}
+$('chat-input').addEventListener('focus', () => setTimeout(placeChat, 300));
+$('chat-input').addEventListener('blur', () => setTimeout(placeChat, 300));
 $('chat-form').addEventListener('submit', async e => {
   e.preventDefault();
   const text = $('chat-input').value.trim();
