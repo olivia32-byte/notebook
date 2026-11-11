@@ -149,6 +149,11 @@ footer.pages { padding-block: 0 10px; display: flex; flex-wrap: wrap; align-item
 .msg time { display: block; font-size: 11px; opacity: .75; margin-top: 2px; }
 #chat form { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
 #chat form input { flex: 1; }
+#chat.typing {
+  position: fixed; top: calc(8px + env(safe-area-inset-top, 0px)); bottom: auto; max-height: 42vh;
+}
+#chat.typing form { order: -1; border-top: 0; border-bottom: 1px solid var(--line); }
+#chat.typing .head { display: none; }
 .badge { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 12px; line-height: 20px; text-align: center; margin-left: 4px; }
 
 #toast {
