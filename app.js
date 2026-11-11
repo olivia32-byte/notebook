@@ -44,12 +44,20 @@ function encode(s) {
   }
   return { c: s.color, s: s.size, t: s.erase ? 'e' : s.hl ? 'h' : 'p', d: out.join(',') };
 }
+function encodeCached(s) { return s === current ? encode(s) : (s._enc || (s._enc = encode(s))); }
 function decode(o) {
   const n = o.d ? o.d.split(',').map(Number) : []; const pts = [];
   let X = 0, Y = 0, P = 0;
   for (let i = 0; i + 2 < n.length; i += 3) { X += n[i]; Y += n[i + 1]; P += n[i + 2]; pts.push({ x: X / 2, y: Y / 2, p: P / 20 }); }
-  return { pts, color: o.c, size: o.s, erase: o.t === 'e', hl: o.t === 'h' };
+  return { pts, color: o.c, size: o.s, erase: o.t === 'e', hl: o.t === 'h', _enc: o };
 }
+// decode only strokes added since the last copy (the student usually just added a few)
+function decodeMore(prev, raw) {
+  if (prev.length && raw.length >= prev.length && prev[prev.length - 1]._enc && raw[prev.length - 1] && prev[prev.length - 1]._enc.d === raw[prev.length - 1].d)
+    return prev.concat(raw.slice(prev.length).map(decode));
+  return raw.map(decode);
+}
+const sizeOf = enc => enc.reduce((t, e) => t + e.d.length + 40, 200);
 
 /* ================= backend ================= */
 if (!window.__TEST_BACKEND && (!window.FIREBASE_CONFIG || !window.FIREBASE_CONFIG.apiKey)) {
@@ -278,7 +286,7 @@ function renderClass() {
       if (t) t.unsub();
       if (!cur) { thumbSubs[st.id] = { key, unsub: () => {} }; thumbData[st.id] = null; drawThumb(st.id); continue; }
       const refs = classRefs(classId, st.id);
-      thumbSubs[st.id] = { key, unsub: refs.page(cur.nb, cur.pg).onSnapshot(d => { thumbData[st.id] = d.exists ? d.data() : null; drawThumb(st.id); }, () => {}) };
+      thumbSubs[st.id] = { key, unsub: refs.page(cur.nb, cur.pg).onSnapshot(d => { thumbData[st.id] = d.exists ? d.data() : null; thumbLater(st.id); }, () => {}) };
     }
   }
 }
@@ -292,6 +300,12 @@ function updateCardText(st) {
   if (st.lastMsgAt && st.lastMsgAt > (seen[st.id] || 0)) {
     const p = document.createElement('span'); p.className = 'pill'; p.textContent = '새 메시지'; c.when.append(p);
   }
+}
+const thumbTimers = {};
+function thumbLater(sid) {
+  if (thumbTimers[sid]) return;
+  thumbTimers[sid] = setTimeout(() => { thumbTimers[sid] = null; if (!$('class').hidden) drawThumb(sid); }, 3000);
+  if (!thumbTimers[sid + ':first']) { thumbTimers[sid + ':first'] = 1; drawThumb(sid); }
 }
 function drawThumb(sid) {
   const c = cards[sid]; if (!c) return;
@@ -362,7 +376,8 @@ const ctx = ink.getContext('2d', { desynchronized: true, alpha: false });
 const lctx = live.getContext('2d');
 const offBase = document.createElement('canvas'), bctx = offBase.getContext('2d');
 const offEdit = document.createElement('canvas'), ectx = offEdit.getContext('2d');
-const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const cssCache = {};
+const cssVar = n => cssCache[n] || (cssCache[n] = getComputedStyle(document.documentElement).getPropertyValue(n).trim());
 const statusText = $('status-text'), dot = $('dot'), hint = $('hint');
 
 let mode = 'student';
@@ -476,7 +491,7 @@ function showPage(i) {
     pageSubs.push(R.page(nb.id, pg.id).onSnapshot(d => {
       if (!d.exists) return;
       const data = d.data();
-      base = (data.strokes || []).map(decode);
+      base = decodeMore(base, data.strokes || []);
       if (data.paper !== undefined && data.paper !== pg.paper) { pg.paper = data.paper; sheet.className = pg.paper; }
       safeRedraw();
     }, () => {}));
@@ -491,7 +506,12 @@ function showPage(i) {
   renderSeal();
   redraw();
 }
-function safeRedraw() { if (current) pendingRedraw = true; else redraw(); }
+let redrawTimer = null;
+function safeRedraw() {
+  if (current) { pendingRedraw = true; return; }
+  if (redrawTimer) return;
+  redrawTimer = setTimeout(() => { redrawTimer = null; if (current) pendingRedraw = true; else redraw(); }, 250);
+}
 
 function renderSeal() {
   const el = $('seal'); el.hidden = !seal; el.textContent = seal;
@@ -568,27 +588,30 @@ $('chat-form').addEventListener('submit', async e => {
 });
 
 /* ---------- autosave ---------- */
-let dirty = false, saveTimer = null, saving = Promise.resolve();
+let dirty = false, saveTimer = null, saving = Promise.resolve(), lastTouch = 0;
 function setSave(text, err) { const el = $('save'); el.textContent = text; el.classList.toggle('err', !!err); }
-function markDirty() { dirty = true; setSave('저장 중…'); clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 1200); }
+function markDirty() { dirty = true; setSave('저장 중…'); clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 2500); }
 function flushSave() {
   clearTimeout(saveTimer); saveTimer = null;
   if (!dirty || !nb || !pages[pi]) return saving;
   dirty = false;
-  const pg = pages[pi], book = nb, enc = strokes.map(encode), refs = R, who = mode;
+  const pg = pages[pi], book = nb, enc = strokes.map(encodeCached), refs = R, who = mode;
   const r = sheet.getBoundingClientRect();
   let job;
   if (who === 'teacher') {
     const body = { strokes: enc, seal, updated: Date.now() };
-    job = async () => { await refs.fb(book.id, pg.id).set(body); return JSON.stringify(body).length; };
+    job = async () => { await refs.fb(book.id, pg.id).set(body); return sizeOf(enc); };
   } else {
     const body = { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: Math.round(r.width), h: Math.round(r.height) };
     book.updated = today(); book.pages = pages.length;
     job = async () => {
       await store.putPage(book.id, body);
-      await store.putNotebook(book);
-      touchStudent({ current: { nb: book.id, nbName: book.name, pg: pg.id, n: pg.n }, updated: Date.now() });
-      return JSON.stringify(body).length;
+      const now = Date.now();
+      if (book._savedPages !== pages.length || now - (book._savedAt || 0) > 10 * 60 * 1000) {
+        await store.putNotebook(book); book._savedPages = pages.length; book._savedAt = now;
+      }
+      if (now - lastTouch > 20000) { lastTouch = now; touchStudent({ current: { nb: book.id, nbName: book.name, pg: pg.id, n: pg.n }, updated: now }); }
+      return sizeOf(enc);
     };
   }
   // one write at a time: chain after the previous save
@@ -773,7 +796,8 @@ function end(e) {
   ctx.globalCompositeOperation = 'source-over';
   const wasErase = current.erase, wasSnap = current.snap, type = current.type;
   current = null; activeId = null;
-  if (wasErase || pendingRedraw || overlay.length) redraw();
+  if (wasErase || pendingRedraw || overlay.some(o => o.hl)) redraw();
+  else if (overlay.length) { for (const o of overlay) drawStroke(ctx, o); ctx.globalCompositeOperation = 'source-over'; }
   if (wasSnap) setStatus(type);
   markDirty();
 }
