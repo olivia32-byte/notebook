@@ -399,7 +399,7 @@ function paintThumb(cv, el, data) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const st of strokes) if (!st.erase) for (const q of st.pts) { if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; }
     if (x1 >= x0) {
-      const pad = 24, minW = 260, minH = 200;
+      const pad = 12, minW = 260, minH = 200;
       x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
       if (x1 - x0 < minW) { const c = (x0 + x1) / 2; x0 = c - minW / 2; x1 = c + minW / 2; }
       if (y1 - y0 < minH) { y1 = y0 + minH; }
@@ -407,14 +407,25 @@ function paintThumb(cv, el, data) {
     }
   }
   const full = Math.min(w / PAGE_W, availH / PAGE_H);
-  const s = Math.min(w / bw, availH / bh, full * 3);
-  const ox = (w - bw * s) / 2 - bx * s, oy = -by * s;
+  // fill the tile across with no side margins; if the writing is then taller than the tile,
+  // show the part around the newest stroke (where the student is writing now)
+  let s, oy;
+  if (boardZoom) {
+    s = w / bw;
+    const contentH = bh * s;
+    if (contentH <= availH) oy = -by * s;
+    else {
+      const last = [...strokes].reverse().find(st => !st.erase && st.pts.length);
+      const ly = last ? last.pts.reduce((t, q) => t + q.y, 0) / last.pts.length : by;
+      const top = Math.min(Math.max(ly * s - availH * 0.6, by * s), (by + bh) * s - availH);
+      oy = -top;
+    }
+  } else { s = full; oy = -by * s; }
+  const ox = (w - bw * s) / 2 - bx * s;
   if (!boardZoom && (w - PAGE_W * s) / 2 > 2) { g.strokeStyle = cssVar('--line'); g.lineWidth = 1; g.strokeRect(ox + 0.5, 0.5, PAGE_W * s - 1, PAGE_H * s); }
-  // small previews make thin pencil lines vanish: thicken them a little
-  const boost = Math.min(2.5, Math.max(1, 0.6 / s));
   g.save(); g.beginPath(); g.rect(0, 0, w, availH + 1); g.clip();
   g.translate(ox, oy);
-  for (const st of strokes) drawStroke(g, boost > 1 && !st.erase ? { ...st, size: st.size * boost } : st, s);
+  for (const st of strokes) drawStroke(g, st, s);
   g.restore();
   g.globalCompositeOperation = 'source-over';
 }
@@ -1305,7 +1316,9 @@ function resetLayers() { for (const L of Object.values(layers)) { L.g.clearRect(
 function paintPaper() {
   const W = frame.width, H = frame.height, kind = (pages[pi] && pages[pi].paper) || '';
   const bgPg = pages[pi], bg = bgPg && bgPg.bg ? bgCache[bgPg.id] : null;
-  const key = `${kind}|${W}x${H}|${bg && bg.stamp === bgPg.bg ? bg.stamp : 0}`;
+  // the page id is part of the key: every page of one PDF carries the same stamp, so the stamp alone
+  // made the next page reuse the previous page's picture
+  const key = `${kind}|${W}x${H}|${bg && bg.stamp === bgPg.bg ? bgPg.id + ':' + bg.stamp : 0}`;
   if (key === paperKey) return;
   paperKey = key; paperC.width = W; paperC.height = H;
   const g = pctx;
