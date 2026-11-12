@@ -88,13 +88,18 @@ button:disabled { opacity: .4; cursor: default; }
 .cover[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--accent); }
 
 /* ---------- class (teacher) ---------- */
-.kids { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; }
-.kid { background: var(--bar); border: 1px solid var(--line); border-radius: 10px; padding: 0; overflow: hidden; text-align: left; display: grid; }
-.kid canvas { width: 100%; aspect-ratio: 4 / 3; max-width: 100%; display: block; background: var(--paper); border-bottom: 1px solid var(--line); }
-.kid .info { padding: 10px 12px; display: grid; gap: 3px; }
-.kid .name { font-weight: 600; font-size: 15px; }
+/* the live board fills the screen under the top bar: columns are worked out from the number of students */
+.kids { display: grid; gap: 2px; padding: 2px; background: var(--line); grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr)); grid-auto-rows: var(--rowh, 260px); }
+.kids:empty { display: none; }
+.kid { position: relative; background: var(--paper); border: 0; border-radius: 0; padding: 0; overflow: hidden; text-align: left; display: block; min-height: 0; }
+.kid canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: var(--paper); }
+.kid .info { position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 8px; display: grid; gap: 1px; background: color-mix(in srgb, var(--bar) 90%, transparent); border-top: 1px solid var(--line); }
+.kids.tiny .kid .where { display: none; }
+.kids.tiny .kid .info { padding: 2px 6px; }
+.kids.tiny .kid .name { font-size: 13px; }
+.kid .name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kid .where { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.kid .when { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.kid .when { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .kid .when.on { color: var(--live); font-weight: 600; }
 .kid .when.on::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--live); }
 .pill { font-size: 11px; font-weight: 600; color: var(--bar); background: var(--danger); border-radius: 999px; padding: 1px 8px; }
@@ -159,6 +164,7 @@ footer.pages { padding-block: 0 10px; display: flex; flex-wrap: wrap; align-item
 .book.deleting { outline: 3px dashed var(--danger); outline-offset: 3px; }
 .del-tag { position: absolute; left: 26px; right: 14px; bottom: 44px; background: var(--danger); color: #fff; border-radius: 6px; padding: 6px 8px; font-size: 13px; font-weight: 600; text-align: center; }
 .badge { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 12px; line-height: 20px; text-align: center; margin-left: 4px; }
+button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 
 #toast {
   position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
@@ -287,8 +293,8 @@ footer.pages { padding-block: 0 10px; display: flex; flex-wrap: wrap; align-item
     <span class="small">반 코드</span><span class="code-box" id="class-code"></span>
     <button id="to-classes">내 반 목록</button>
   </div>
+  <div class="kids" id="kids"></div>
   <div class="body gutter">
-    <div class="kids" id="kids"></div>
     <div class="empty" id="kids-empty">아직 등록된 학생이 없어요. 아래에서 학생을 등록해 주세요.</div>
     <form class="panel" id="handout-form" style="max-width:620px">
       <h2>학습지 나눠 주기</h2>
@@ -401,6 +407,7 @@ footer.pages { padding-block: 0 10px; display: flex; flex-wrap: wrap; align-item
     <span class="pageno" id="pageno">1 / 1쪽</span>
     <button id="next">다음 쪽 ▶</button>
     <button id="add-page">+ 새 페이지</button>
+    <button id="del-page">이 쪽 지우기</button>
     <button id="chat-open">대화<span class="badge" id="chat-badge" hidden>0</span></button>
     <span class="save" id="save" aria-live="polite">저장됨</span>
   </footer>

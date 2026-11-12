@@ -276,7 +276,7 @@ function enterClass(c) {
   $('class-title').textContent = c.name;
   $('class-code').textContent = c.id;
   stopClass();
-  $('kids').textContent = ''; cards = {};
+  $('kids').textContent = ''; cards = {}; layoutCount = -1;
   classUnsub = db.collection(`classes/${c.id}/students`).onSnapshot(snap => {
     students = snap.docs.map(d => ({ ...d.data(), id: d.id })).sort((a, b) => (a.num || 0) - (b.num || 0));
     renderClass(); renderPins(); renderHandoutKids(); syncMembers();
@@ -290,6 +290,7 @@ function stopClass() {
 }
 function renderClass() {
   $('kids-empty').hidden = students.length > 0;
+  const n = students.length, relayout = n !== layoutCount;
   const box = $('kids');
   for (const id of Object.keys(cards)) if (!students.some(s => s.id === id)) { cards[id].el.remove(); delete cards[id]; }
   for (const st of students) {
@@ -307,6 +308,7 @@ function renderClass() {
     }
     box.append(c.el);
     updateCardText(st);
+    c.st = st;
     // live preview: follow the page this student is on now
     const cur = st.current, key = cur ? cur.nb + '/' + cur.pg : '';
     const t = thumbSubs[st.id];
@@ -317,6 +319,28 @@ function renderClass() {
       thumbSubs[st.id] = { key, unsub: refs.page(cur.nb, cur.pg).onSnapshot(d => { thumbData[st.id] = d.exists ? d.data() : null; thumbLater(st.id); }, () => {}) };
     }
   }
+  if (relayout) layoutKids();
+}
+// Fit every student on one screen: try each column count and keep the one that gives the biggest page.
+let layoutCount = -1;
+function layoutKids() {
+  const box = $('kids'), n = students.length;
+  layoutCount = n;
+  if (!n || $('class').hidden) return;
+  const GAP = 2, top = $('class').querySelector('.topbar');
+  const W = box.clientWidth - GAP * 2;
+  const H = Math.max(240, $('class').clientHeight - top.offsetHeight - GAP * 2);
+  let best = { s: 0, cols: 1, ch: H };
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    const cw = (W - (cols - 1) * GAP) / cols, ch = (H - (rows - 1) * GAP) / rows;
+    const s = Math.min(cw / PAGE_W, ch / PAGE_H);
+    if (s > best.s) best = { s, cols, ch, cw };
+  }
+  box.style.setProperty('--cols', best.cols);
+  box.style.setProperty('--rowh', Math.floor(best.ch) + 'px');
+  box.classList.toggle('tiny', best.cw < 170);
+  Object.keys(cards).forEach(drawThumb);
 }
 function updateCardText(st) {
   const c = cards[st.id]; if (!c) return;
@@ -338,16 +362,22 @@ function thumbLater(sid) {
 function drawThumb(sid) {
   const c = cards[sid]; if (!c) return;
   const cv = c.cv, r = cv.getBoundingClientRect(), k = window.devicePixelRatio || 1;
-  cv.width = Math.round(r.width * k) || 400; cv.height = Math.round(r.height * k) || 300;
-  const g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height);
+  const w = Math.round(r.width * k) || 300, h = Math.round(r.height * k) || 400;
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  const g = cv.getContext('2d');
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.fillStyle = cssVar('--paper'); g.fillRect(0, 0, w, h);
+  // the whole page, scaled to fit the tile; the name bar covers the bottom edge, so leave room for it
+  const infoH = c.el.querySelector('.info').offsetHeight * k;
+  const s = Math.min(w / PAGE_W, Math.max(h - infoH, h * 0.6) / PAGE_H);
+  const ox = (w - PAGE_W * s) / 2;
+  if (ox > 2) { g.strokeStyle = cssVar('--line'); g.lineWidth = 1; g.strokeRect(ox + 0.5, 0.5, PAGE_W * s - 1, PAGE_H * s); }
   const data = thumbData[sid];
   if (data && data.strokes) {
-    const k = cv.width / PAGE_W;
-    for (const o of data.strokes) drawStroke(g, decode(o), k);
+    g.translate(ox, 0);
+    for (const o of data.strokes) drawStroke(g, decode(o), s);
+    g.setTransform(1, 0, 0, 1, 0, 0);
   }
-  g.globalCompositeOperation = 'destination-over';
-  g.fillStyle = cssVar('--paper'); g.fillRect(0, 0, cv.width, cv.height);
-  g.globalCompositeOperation = 'source-over';
 }
 
 /* ---------- enrolment ---------- */
@@ -488,6 +518,7 @@ function setEditorChrome() {
   $('back').textContent = t ? '← 우리 반' : '← 공책장';
   $('teacher-bar').hidden = !t;
   $('add-page').hidden = t;
+  $('del-page').hidden = t;
   $('paper').hidden = t;
   $('bg-btn').hidden = t;
   $('chat').hidden = true;
@@ -498,7 +529,7 @@ function setEditorChrome() {
 }
 
 function showPage(i) {
-  clearPageSubs();
+  clearPageSubs(); resetDelPage();
   pi = Math.max(0, Math.min(i, pages.length - 1));
   const pg = pages[pi];
   sheet.className = pg.paper || '';
@@ -575,9 +606,38 @@ $('add-page').addEventListener('click', async () => {
   showPage(pages.length - 1);
   markDirty();
 });
+// delete the page on screen: two taps, like deleting a notebook. The last page stays (delete the notebook instead).
+let delPageTimer = null;
+$('del-page').addEventListener('click', async () => {
+  const btn = $('del-page');
+  if (pages.length <= 1) { toast('마지막 한 쪽은 지울 수 없어요. 공책을 통째로 지우려면 공책장에서 지워요.'); return; }
+  if (btn.dataset.armed !== '1') {
+    btn.dataset.armed = '1'; btn.textContent = '한 번 더 누르면 지워져요'; btn.classList.add('danger');
+    clearTimeout(delPageTimer);
+    delPageTimer = setTimeout(resetDelPage, 3000);
+    return;
+  }
+  resetDelPage(); btn.disabled = true;
+  try {
+    await flushSave(); dirty = false; clearTimeout(saveTimer);
+    const pg = pages[pi], book = nb, at = pi;
+    clearPageSubs();
+    await R.page(book.id, pg.id).delete();
+    if (pg.bg && !pg.bgSrc) await R.page(book.id, pg.id + '-bg').delete().catch(() => {});
+    pages.splice(at, 1);
+    // keep page numbers in a row so the teacher's board shows the right page number
+    for (const p of pages.slice(at)) { p.n -= 1; R.page(book.id, p.id).update({ n: p.n }).catch(() => {}); }
+    book.pages = pages.length; book.updated = today();
+    await store.putNotebook(book); book._savedPages = pages.length;
+    toast(`${at + 1}쪽을 지웠어요`);
+    showPage(Math.min(at, pages.length - 1));
+  } catch (err) { toast('지우지 못했어요. ' + errText(err)); showPage(pi); }
+  finally { btn.disabled = false; }
+});
+function resetDelPage() { const b = $('del-page'); clearTimeout(delPageTimer); b.dataset.armed = ''; b.textContent = '이 쪽 지우기'; b.classList.remove('danger'); }
 $('back').addEventListener('click', async () => {
   await flushSave(); clearPageSubs(); $('chat').hidden = true;
-  if (mode === 'teacher') { show('class'); students.forEach(updateCardText); Object.keys(cards).forEach(drawThumb); }
+  if (mode === 'teacher') { show('class'); students.forEach(updateCardText); layoutKids(); }
   else {
     show('shelf'); renderShelf();
     // pick up notebooks the teacher added meanwhile
@@ -1150,6 +1210,6 @@ const onFs = () => { fsBtn.textContent = fsEl() ? '전체 화면 끝내기' : '�
 document.addEventListener('fullscreenchange', onFs);
 document.addEventListener('webkitfullscreenchange', onFs);
 window.addEventListener('orientationchange', () => setTimeout(resize, 250));
-window.addEventListener('resize', () => { resize(); if (!$('class').hidden) Object.keys(cards).forEach(drawThumb); });
+window.addEventListener('resize', () => { resize(); if (!$('class').hidden) layoutKids(); });
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
