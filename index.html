@@ -95,6 +95,10 @@ button:disabled { opacity: .4; cursor: default; }
 .kid canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: var(--paper); }
 .kid .info { position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 8px; display: grid; gap: 1px; background: color-mix(in srgb, var(--bar) 90%, transparent); border-top: 1px solid var(--line); }
 .kids.tiny .kid .where { display: none; }
+.kid.none { opacity: .45; }
+.kid .when.done { color: var(--seal); font-weight: 600; }
+.col-bar { background: var(--bar); border-bottom: 1px solid var(--line); padding-block: 8px; display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.col-bar .label { font-size: 13px; color: var(--muted); }
 .kids.tiny .kid .info { padding: 2px 6px; }
 .kids.tiny .kid .name { font-size: 13px; }
 .kid .name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -289,11 +293,21 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 <!-- ===== Class (teacher) ===== -->
 <section id="class" class="scroll" hidden>
   <div class="topbar gutter">
-    <div class="grow"><h1 id="class-title">우리 반</h1><p>학생이 쓰는 공책이 실시간으로 보여요. 눌러서 피드백을 남겨요.</p></div>
+    <div class="grow"><h1 id="class-title">우리 반</h1><p>실시간 보드는 지금 쓰는 공책을, 모아보기는 같은 이름의 공책을 반 전체로 보여 줘요.</p></div>
+    <div class="row" role="group" aria-label="보기">
+      <button id="tab-live" aria-pressed="true">실시간 보드</button>
+      <button id="tab-col" aria-pressed="false">공책별 모아보기</button>
+    </div>
     <span class="small">반 코드</span><span class="code-box" id="class-code"></span>
     <button id="to-classes">내 반 목록</button>
   </div>
   <div class="kids" id="kids"></div>
+  <div class="col-bar gutter" id="col-bar" hidden>
+    <span class="label">공책</span><select id="col-name" aria-label="모아 볼 공책"></select>
+    <span class="label">쪽</span><select id="col-page" aria-label="모아 볼 쪽"></select>
+    <span class="small" id="col-status"></span>
+  </div>
+  <div class="kids" id="col-kids" hidden></div>
   <div class="body gutter">
     <div class="empty" id="kids-empty">아직 등록된 학생이 없어요. 아래에서 학생을 등록해 주세요.</div>
     <form class="panel" id="handout-form" style="max-width:620px">
@@ -376,6 +390,11 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
     <div class="group">
       <span class="label">공책</span>
       <select id="t-notebook" aria-label="학생 공책 고르기"></select>
+    </div>
+    <div class="group" id="t-browse" hidden>
+      <button id="t-prev-kid">◀ 이전 학생</button>
+      <span class="small" id="t-kid-pos"></span>
+      <button id="t-next-kid">다음 학생 ▶</button>
     </div>
     <div class="group" role="group" aria-label="도장">
       <span class="label">도장</span>

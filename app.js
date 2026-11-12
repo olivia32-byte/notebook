@@ -276,7 +276,7 @@ function enterClass(c) {
   $('class-title').textContent = c.name;
   $('class-code').textContent = c.id;
   stopClass();
-  $('kids').textContent = ''; cards = {}; layoutCount = -1;
+  $('kids').textContent = ''; cards = {}; layoutCount = -1; browse = null; colBooks = {}; $('col-name').textContent = ''; setClassTab(false);
   classUnsub = db.collection(`classes/${c.id}/students`).onSnapshot(snap => {
     students = snap.docs.map(d => ({ ...d.data(), id: d.id })).sort((a, b) => (a.num || 0) - (b.num || 0));
     renderClass(); renderPins(); renderHandoutKids(); syncMembers();
@@ -303,7 +303,7 @@ function renderClass() {
       const where = document.createElement('div'); where.className = 'where';
       const when = document.createElement('div'); when.className = 'when';
       info.append(name, where, when); el.append(cv, info);
-      el.addEventListener('click', () => openTeacherNotebook(students.find(s => s.id === st.id)));
+      el.addEventListener('click', () => { browse = null; openTeacherNotebook(students.find(s => s.id === st.id)); });
       c = cards[st.id] = { el, cv, name, where, when };
     }
     box.append(c.el);
@@ -324,13 +324,16 @@ function renderClass() {
 // Fit every student on one screen: try each column count and keep the one that gives the biggest page.
 let layoutCount = -1;
 function layoutKids() {
-  const box = $('kids'), n = students.length;
-  layoutCount = n;
-  if (!n || $('class').hidden) return;
-  const GAP = 2, top = $('class').querySelector('.topbar');
+  layoutCount = students.length;
+  if (colMode) { layoutCollection(); return; }
+  if (fitGrid($('kids'), students.length)) Object.keys(cards).forEach(drawThumb);
+}
+function fitGrid(box, n) {
+  if (!n || $('class').hidden || box.hidden) return false;
+  const GAP = 2, top = $('class').querySelector('.topbar'), bar = $('col-bar');
   const W = box.clientWidth - GAP * 2;
-  const H = Math.max(240, $('class').clientHeight - top.offsetHeight - GAP * 2);
-  let best = { s: 0, cols: 1, ch: H };
+  const H = Math.max(240, $('class').clientHeight - top.offsetHeight - (bar.hidden ? 0 : bar.offsetHeight) - GAP * 2);
+  let best = { s: 0, cols: 1, ch: H, cw: W };
   for (let cols = 1; cols <= n; cols++) {
     const rows = Math.ceil(n / cols);
     const cw = (W - (cols - 1) * GAP) / cols, ch = (H - (rows - 1) * GAP) / rows;
@@ -340,7 +343,7 @@ function layoutKids() {
   box.style.setProperty('--cols', best.cols);
   box.style.setProperty('--rowh', Math.floor(best.ch) + 'px');
   box.classList.toggle('tiny', best.cw < 170);
-  Object.keys(cards).forEach(drawThumb);
+  return true;
 }
 function updateCardText(st) {
   const c = cards[st.id]; if (!c) return;
@@ -360,24 +363,138 @@ function thumbLater(sid) {
   if (!thumbTimers[sid + ':first']) { thumbTimers[sid + ':first'] = 1; drawThumb(sid); }
 }
 function drawThumb(sid) {
-  const c = cards[sid]; if (!c) return;
-  const cv = c.cv, r = cv.getBoundingClientRect(), k = window.devicePixelRatio || 1;
+  const c = cards[sid]; if (c) paintThumb(c.cv, c.el, thumbData[sid]);
+}
+function paintThumb(cv, el, data) {
+  const r = cv.getBoundingClientRect(), k = window.devicePixelRatio || 1;
   const w = Math.round(r.width * k) || 300, h = Math.round(r.height * k) || 400;
   if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
   const g = cv.getContext('2d');
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.fillStyle = cssVar('--paper'); g.fillRect(0, 0, w, h);
   // the whole page, scaled to fit the tile; the name bar covers the bottom edge, so leave room for it
-  const infoH = c.el.querySelector('.info').offsetHeight * k;
+  const infoH = el.querySelector('.info').offsetHeight * k;
   const s = Math.min(w / PAGE_W, Math.max(h - infoH, h * 0.6) / PAGE_H);
   const ox = (w - PAGE_W * s) / 2;
   if (ox > 2) { g.strokeStyle = cssVar('--line'); g.lineWidth = 1; g.strokeRect(ox + 0.5, 0.5, PAGE_W * s - 1, PAGE_H * s); }
-  const data = thumbData[sid];
   if (data && data.strokes) {
     g.translate(ox, 0);
     for (const o of data.strokes) drawStroke(g, decode(o), s);
     g.setTransform(1, 0, 0, 1, 0, 0);
   }
+}
+
+/* ---------- after class: one notebook name, every student ---------- */
+// The teacher picks a notebook name (e.g. "수학") and a page; every student's copy is shown side by side.
+// Tapping one opens it for feedback, and 이전/다음 학생 walks through the class without coming back here.
+let colMode = false, colBooks = {}, colTiles = {}, colItems = [], browse = null, colLoadId = 0;
+const normName = x => (x || '').trim();
+function setClassTab(col) {
+  colMode = col;
+  pressIn([$('tab-live'), $('tab-col')], col ? $('tab-col') : $('tab-live'));
+  $('kids').hidden = col; $('col-bar').hidden = !col; $('col-kids').hidden = !col;
+  if (col) loadCollection(); else layoutKids();
+}
+$('tab-live').addEventListener('click', () => setClassTab(false));
+$('tab-col').addEventListener('click', () => setClassTab(true));
+async function loadCollection() {
+  const id = ++colLoadId;
+  $('col-status').textContent = '공책을 모으는 중…';
+  const got = await Promise.all(students.map(st => classRefs(classId, st.id).books.get()
+    .then(q => [st.id, q.docs.map(d => ({ ...d.data(), id: d.id }))]).catch(() => [st.id, []])));
+  if (id !== colLoadId) return;
+  colBooks = Object.fromEntries(got);
+  const count = {};
+  for (const list of Object.values(colBooks)) new Set(list.map(n => normName(n.name))).forEach(nm => { if (nm) count[nm] = (count[nm] || 0) + 1; });
+  const names = Object.keys(count).sort((a, b) => count[b] - count[a] || a.localeCompare(b, 'ko'));
+  const sel = $('col-name'), prev = sel.value || lsGet('dn-col-name');
+  sel.textContent = '';
+  for (const nm of names) { const o = document.createElement('option'); o.value = nm; o.textContent = `${nm} (${count[nm]}명)`; sel.append(o); }
+  if (names.includes(prev)) sel.value = prev;
+  $('col-status').textContent = names.length ? '' : '아직 학생들이 만든 공책이 없어요.';
+  renderCollection();
+}
+function colPick(st) {
+  // a student may have two notebooks with the same name: use the one written in most recently
+  const nm = $('col-name').value;
+  return (colBooks[st.id] || []).filter(n => normName(n.name) === nm).sort((a, b) => (b.updated || '').localeCompare(a.updated || ''))[0] || null;
+}
+function renderCollection() {
+  const nm = $('col-name').value; lsPut('dn-col-name', nm);
+  const box = $('col-kids'); box.textContent = ''; colTiles = {};
+  colItems = students.map(st => ({ st, nb: colPick(st) }));
+  const most = Math.max(1, ...colItems.map(x => (x.nb && x.nb.pages) || 1));
+  const ps = $('col-page'), keep = ps.value || 'last';
+  ps.textContent = '';
+  const opt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; ps.append(o); };
+  opt('last', '마지막 쪽'); for (let i = 1; i <= most; i++) opt(String(i), i + '쪽');
+  ps.value = [...ps.options].some(o => o.value === keep) ? keep : 'last';
+  if (!nm) return;
+  colItems.forEach((it, i) => {
+    const el = document.createElement('button'); el.className = 'kid' + (it.nb ? '' : ' none');
+    const cv = document.createElement('canvas');
+    const info = document.createElement('div'); info.className = 'info';
+    const name = document.createElement('div'); name.className = 'name'; name.textContent = `${it.st.num}번 ${it.st.name || ''}`;
+    const where = document.createElement('div'); where.className = 'where';
+    const when = document.createElement('div'); when.className = 'when';
+    where.textContent = it.nb ? '불러오는 중…' : '이 공책이 없어요';
+    info.append(name, where, when); el.append(cv, info);
+    if (it.nb) el.addEventListener('click', () => openFromCollection(i));
+    else el.disabled = true;
+    box.append(el);
+    colTiles[it.st.id] = { el, cv, where, when, data: null };
+  });
+  layoutCollection();
+  colItems.forEach(it => { if (it.nb) loadColTile(it); });
+}
+function layoutCollection() {
+  if (fitGrid($('col-kids'), colItems.length)) Object.keys(colTiles).forEach(sid => paintThumb(colTiles[sid].cv, colTiles[sid].el, colTiles[sid].data));
+}
+async function colPage(st, nbId) {
+  const ref = classRefs(classId, st.id).pages(nbId), want = $('col-page').value;
+  const q = await (want === 'last' ? ref.orderBy('n', 'desc').limit(1) : ref.where('n', '==', +want).limit(1)).get();
+  const docs = q.docs.map(d => ({ ...d.data(), id: d.id })).filter(d => typeof d.n === 'number');
+  return docs.sort((a, b) => b.n - a.n)[0] || null;
+}
+async function loadColTile(it) {
+  const t = colTiles[it.st.id], id = colLoadId, nm = $('col-name').value, want = $('col-page').value;
+  try {
+    const pg = await colPage(it.st, it.nb.id);
+    if (colTiles[it.st.id] !== t) return;
+    it.pg = pg;
+    t.data = pg;
+    t.where.textContent = pg ? `${pg.n}쪽 · ${fmtDate(pg.created)}` : (want === 'last' ? '빈 공책' : `${want}쪽이 없어요`);
+    paintThumb(t.cv, t.el, pg);
+    if (!pg) return;
+    const fb = await classRefs(classId, it.st.id).fb(it.nb.id, pg.id).get();
+    if (colTiles[it.st.id] !== t) return;
+    const d = fb.exists ? fb.data() : {};
+    const done = (d.strokes && d.strokes.length) || d.seal;
+    t.when.className = 'when' + (done ? ' done' : '');
+    t.when.textContent = done ? (d.seal ? `피드백 함 · ${d.seal}` : '피드백 함') : '';
+  } catch (e) { if (colTiles[it.st.id] === t) t.where.textContent = '불러오지 못했어요'; }
+}
+$('col-name').addEventListener('change', () => { $('col-page').value = 'last'; renderCollection(); });
+$('col-page').addEventListener('change', renderCollection);
+function openFromCollection(i) {
+  const it = colItems[i]; if (!it || !it.nb) return;
+  browse = { i };
+  openTeacherNotebook(it.st, { nb: it.nb.id, pg: it.pg ? it.pg.id : null });
+}
+function browseStep(dir) {
+  if (!browse) return;
+  for (let i = browse.i + dir; i >= 0 && i < colItems.length; i += dir) {
+    if (colItems[i].nb) { flushSave().then(() => openFromCollection(i)); return; }
+  }
+  toast(dir > 0 ? '마지막 학생이에요' : '첫 번째 학생이에요');
+}
+$('t-prev-kid').addEventListener('click', () => browseStep(-1));
+$('t-next-kid').addEventListener('click', () => browseStep(1));
+function updateBrowseBar() {
+  const on = !!browse; $('t-browse').hidden = !on;
+  if (!on) return;
+  const have = colItems.filter(x => x.nb), at = have.indexOf(colItems[browse.i]);
+  $('t-kid-pos').textContent = `${$('col-name').value} · ${at + 1} / ${have.length}명`;
 }
 
 /* ---------- enrolment ---------- */
@@ -477,19 +594,19 @@ async function openStudentNotebook(n) {
   showPage(pages.length - 1);
   setSave('저장됨');
 }
-async function openTeacherNotebook(st) {
+async function openTeacherNotebook(st, target) {
   if (!st) return;
   mode = 'teacher';
   seen[st.id] = Date.now(); lsPut('dn-seen', seen); updateCardText(st);
   R = classRefs(classId, st.id);
   setEditorChrome();
-  show('book');
+  show('book'); updateBrowseBar();
   $('book-name').textContent = `${st.num}번 ${st.name || ''}`;
   setSave('불러오는 중…');
   try { tNotebooks = (await R.books.get()).docs.map(d => ({ ...d.data(), id: d.id })); } catch (e) { tNotebooks = []; }
   const sel = $('t-notebook'); sel.textContent = '';
   for (const n of tNotebooks) { const o = document.createElement('option'); o.value = n.id; o.textContent = n.name; sel.append(o); }
-  const cur = st.current;
+  const cur = target || st.current;
   const first = (cur && tNotebooks.find(n => n.id === cur.nb)) || tNotebooks[0];
   if (!first) { pages = []; nb = null; resize(); showEmptyTeacher(); return; }
   sel.value = first.id;
@@ -637,7 +754,11 @@ $('del-page').addEventListener('click', async () => {
 function resetDelPage() { const b = $('del-page'); clearTimeout(delPageTimer); b.dataset.armed = ''; b.textContent = '이 쪽 지우기'; b.classList.remove('danger'); }
 $('back').addEventListener('click', async () => {
   await flushSave(); clearPageSubs(); $('chat').hidden = true;
-  if (mode === 'teacher') { show('class'); students.forEach(updateCardText); layoutKids(); }
+  if (mode === 'teacher') {
+    show('class'); students.forEach(updateCardText); layoutKids();
+    // came from 모아보기: refresh that student's tile so the 피드백 함 mark shows
+    if (browse && colItems[browse.i]) loadColTile(colItems[browse.i]);
+  }
   else {
     show('shelf'); renderShelf();
     // pick up notebooks the teacher added meanwhile
