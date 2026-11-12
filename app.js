@@ -538,7 +538,7 @@ function showPage(i) {
   $('pageno').textContent = `${pi + 1} / ${pages.length}쪽`;
   $('prev').disabled = pi === 0;
   $('next').disabled = pi === pages.length - 1;
-  overlay = []; base = []; seal = ''; msgs = []; chatSeenCount = 0; renderChat();
+  overlay = []; base = []; seal = ''; msgs = []; chatKey = ''; renderChat();
   $('bg-btn').textContent = pg.bg ? '배경 빼기' : '배경 넣기';
   ensureBg(pg);
   if (mode === 'student') {
@@ -646,16 +646,28 @@ $('back').addEventListener('click', async () => {
 });
 
 /* ---------- chat ---------- */
-let msgs = [], chatSeenCount = 0;
+// Unread = messages from the other person newer than the last time this page's chat was open on this
+// tablet. Remembered per page, so messages already read don't light up the red badge again next time.
+let msgs = [], chatKey = '';
+let chatRead = lsGet('dn-chat-read') || {};
+function markChatRead() {
+  if (!chatKey || !msgs.length) return;
+  const last = msgs[msgs.length - 1].at || 0;
+  if ((chatRead[chatKey] || 0) >= last) return;
+  chatRead[chatKey] = last;
+  const keys = Object.keys(chatRead);
+  if (keys.length > 400) keys.sort((a, b) => chatRead[a] - chatRead[b]).slice(0, keys.length - 400).forEach(k => delete chatRead[k]);
+  lsPut('dn-chat-read', chatRead);
+}
 function subscribeChat(pg) {
   let first = true;
+  chatKey = (mode === 'teacher' ? 't/' : 's/') + nb.id + '/' + pg.id; // per role: a teacher may also try the student side on the same tablet
   pageSubs.push(R.chat(nb.id, pg.id).orderBy('at').onSnapshot(snap => {
     const before = msgs.length;
     msgs = snap.docs.map(d => d.data());
     const mine = mode === 'teacher' ? 't' : 's';
     const fresh = msgs.slice(before).filter(m => m.from !== mine);
     if (!first && fresh.length) toast(mode === 'teacher' ? '학생이 메시지를 보냈어요' : '선생님이 메시지를 보냈어요');
-    if (first) chatSeenCount = msgs.filter(m => m.from === mine).length;
     first = false;
     renderChat();
   }, () => {}));
@@ -671,11 +683,12 @@ function renderChat() {
     d.append(t); box.append(d);
   }
   box.scrollTop = box.scrollHeight;
-  if (!$('chat').hidden) chatSeenCount = msgs.length;
-  const unread = Math.max(0, msgs.length - chatSeenCount);
+  if (!$('chat').hidden) markChatRead();
+  const readAt = chatRead[chatKey] || 0;
+  const unread = msgs.filter(m => m.from !== mine && (m.at || 0) > readAt).length;
   const badge = $('chat-badge'); badge.hidden = unread === 0; badge.textContent = unread;
 }
-$('chat-open').addEventListener('click', () => { $('chat').hidden = !$('chat').hidden; chatSeenCount = msgs.length; renderChat(); if (!$('chat').hidden) $('chat-input').focus(); });
+$('chat-open').addEventListener('click', () => { $('chat').hidden = !$('chat').hidden; markChatRead(); renderChat(); if (!$('chat').hidden) $('chat-input').focus(); });
 $('chat-close').addEventListener('click', () => { $('chat').hidden = true; });
 // on-screen keyboard: while typing, the chat box moves to the top of the screen with the typing line
 // first, so the keyboard (which rises from the bottom) never covers it, in a browser tab or full screen
@@ -689,7 +702,11 @@ $('chat-form').addEventListener('submit', async e => {
   const at = Date.now();
   try {
     await R.chat(nb.id, pages[pi].id).add({ from: mode === 'teacher' ? 't' : 's', text, at });
-    if (mode === 'student') touchStudent({ lastMsgAt: at, updated: at });
+    if (mode === 'student') {
+      touchStudent({ lastMsgAt: at, updated: at });
+      // a message on a brand-new blank page: save the page too, or the teacher can't open it to read the message
+      if (!pages[pi]._sent) { pages[pi]._sent = true; dirty = true; flushSave(); }
+    }
   } catch (err) { toast('메시지를 보내지 못했어요'); $('chat-input').value = text; }
 });
 
