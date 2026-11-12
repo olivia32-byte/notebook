@@ -667,6 +667,7 @@ async function openStudentNotebook(n) {
   resize();
   showPage(pages.length - 1);
   setSave('저장됨');
+  refreshTrash();
 }
 let tStudent = null;
 async function openTeacherNotebook(st, target) {
@@ -759,6 +760,7 @@ function setEditorChrome() {
   $('teacher-bar').hidden = !t;
   $('add-page').hidden = t;
   $('del-page').hidden = t;
+  $('trash-btn').hidden = true; $('trash').hidden = true;
   $('paper').hidden = t;
   $('bg-btn').hidden = t;
   $('chat').hidden = true;
@@ -848,8 +850,17 @@ $('add-page').addEventListener('click', async () => {
 });
 // delete the page on screen: two taps, like deleting a notebook. The last page stays (delete the notebook instead).
 let delPageTimer = null;
+// An arm or palm resting on the screen can press buttons too. While palm rejection is on and this tablet
+// has an S Pen, the buttons that throw writing away only answer to the pen (or a mouse).
+let lastPtr = 'mouse';
+document.addEventListener('pointerdown', e => { lastPtr = e.pointerType; }, true);
+function handBlocked() {
+  if (lastPtr === 'touch' && palmBlock && penSeen && mode === 'student') { toast('지우는 버튼은 S펜으로 눌러 주세요 (손바닥 차단 중)'); return true; }
+  return false;
+}
 $('del-page').addEventListener('click', async () => {
   const btn = $('del-page');
+  if (handBlocked()) return;
   if (pages.length <= 1) { toast('마지막 한 쪽은 지울 수 없어요. 공책을 통째로 지우려면 공책장에서 지워요.'); return; }
   if (btn.dataset.armed !== '1') {
     btn.dataset.armed = '1'; btn.textContent = '한 번 더 누르면 지워져요'; btn.classList.add('danger');
@@ -862,18 +873,88 @@ $('del-page').addEventListener('click', async () => {
     await flushSave(); dirty = false; clearTimeout(saveTimer);
     const pg = pages[pi], book = nb, at = pi;
     clearPageSubs();
+    // the page goes to the bin first ("<page id>-trash", without a page number so it is not listed),
+    // its background picture stays, and 지운 쪽 can bring it back for 30 days
+    const cur = await R.page(book.id, pg.id).get();
+    const { n: _n, ...body } = cur.exists ? cur.data() : { paper: pg.paper, created: pg.created, strokes: [] };
+    await R.page(book.id, pg.id + '-trash').set({ ...body, of: pg.id, tn: pg.n, deletedAt: Date.now() });
     await R.page(book.id, pg.id).delete();
-    if (pg.bg && !pg.bgSrc) await R.page(book.id, pg.id + '-bg').delete().catch(() => {});
     pages.splice(at, 1);
     // keep page numbers in a row so the teacher's board shows the right page number
     for (const p of pages.slice(at)) { p.n -= 1; R.page(book.id, p.id).update({ n: p.n }).catch(() => {}); }
     book.pages = pages.length; book.updated = today();
     await store.touchNotebook(book); book._savedPages = pages.length;
-    toast(`${at + 1}쪽을 지웠어요`);
+    toast(`${at + 1}쪽을 지웠어요. "지운 쪽"에서 되살릴 수 있어요`);
     showPage(Math.min(at, pages.length - 1));
+    refreshTrash();
   } catch (err) { toast('지우지 못했어요. ' + errText(err)); showPage(pi); }
   finally { btn.disabled = false; }
 });
+
+/* ---------- 지운 쪽: the bin ---------- */
+const TRASH_DAYS = 30;
+let trash = [];
+async function refreshTrash() {
+  trash = [];
+  $('trash-btn').hidden = true;
+  if (mode !== 'student' || !nb) return;
+  const book = nb;
+  try {
+    const q = await R.pages(book.id).orderBy('deletedAt').get();
+    if (nb !== book) return;
+    const old = Date.now() - TRASH_DAYS * 864e5;
+    for (const d of q.docs) {
+      const t = { ...d.data(), id: d.id };
+      if (!t.deletedAt) continue;
+      if (t.deletedAt < old) { R.pages(book.id).doc(d.id).delete().catch(() => {}); if (t.bg && !t.bgSrc) R.page(book.id, t.of + '-bg').delete().catch(() => {}); continue; }
+      trash.push(t);
+    }
+  } catch (e) { /* the bin is optional */ }
+  trash.sort((a, b) => b.deletedAt - a.deletedAt);
+  $('trash-btn').hidden = !trash.length;
+  $('trash-btn').textContent = `지운 쪽 (${trash.length})`;
+  if (!$('trash').hidden) renderTrash();
+}
+function renderTrash() {
+  const box = $('trash-list'); box.textContent = '';
+  if (!trash.length) { $('trash').hidden = true; return; }
+  for (const t of trash) {
+    const row = document.createElement('div'); row.className = 'trash-row';
+    const cv = document.createElement('canvas'); cv.className = 'trash-thumb';
+    const info = document.createElement('div'); info.className = 'small';
+    const d = new Date(t.deletedAt);
+    info.textContent = `${t.tn}쪽이었어요 · ${d.getMonth() + 1}월 ${d.getDate()}일 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}에 지움`;
+    const btn = document.createElement('button'); btn.className = 'primary'; btn.textContent = '되살리기';
+    btn.addEventListener('click', () => restorePage(t, btn));
+    row.append(cv, info, btn); box.append(row);
+    cv.width = 96; cv.height = Math.round(96 * PAGE_H / PAGE_W);
+    const g = cv.getContext('2d'); g.fillStyle = cssVar('--paper'); g.fillRect(0, 0, cv.width, cv.height);
+    for (const o of t.strokes || []) drawStroke(g, decode(o), cv.width / PAGE_W);
+    g.globalCompositeOperation = 'source-over';
+  }
+}
+$('trash-btn').addEventListener('click', () => { $('trash').hidden = !$('trash').hidden; if (!$('trash').hidden) renderTrash(); });
+$('trash-close').addEventListener('click', () => { $('trash').hidden = true; });
+async function restorePage(t, btn) {
+  btn.disabled = true;
+  try {
+    await flushSave(); dirty = false; clearTimeout(saveTimer);
+    const book = nb;
+    // back to where it was: page tn, the pages from there on move one later
+    const at = Math.max(0, Math.min(pages.length, (t.tn || pages.length + 1) - 1));
+    for (const p of pages.slice(at)) { p.n += 1; R.page(book.id, p.id).update({ n: p.n }).catch(() => {}); }
+    const { id: _id, of, tn, deletedAt, ...body } = t;
+    const pg = { ...body, id: of, n: at + 1 };
+    await store.putPage(book.id, pg);
+    await R.pages(book.id).doc(t.id).delete();
+    pages.splice(at, 0, pg);
+    book.pages = pages.length; book.updated = today();
+    await store.touchNotebook(book); book._savedPages = pages.length;
+    toast(`${at + 1}쪽으로 되살렸어요`);
+    showPage(at);
+    await refreshTrash();
+  } catch (err) { toast('되살리지 못했어요. ' + errText(err)); btn.disabled = false; }
+}
 function resetDelPage() { const b = $('del-page'); clearTimeout(delPageTimer); b.dataset.armed = ''; b.textContent = '이 쪽 지우기'; b.classList.remove('danger'); }
 $('back').addEventListener('click', async () => {
   await flushSave(); clearPageSubs(); $('chat').hidden = true;
@@ -1476,18 +1557,31 @@ toolBtns.hl.addEventListener('click', () => {
   setTool('hl');
   if (color === '#1b1b1b') { const y = $('c-yellow'); color = y.dataset.color; pressIn(swatches, y); }
 });
-$('undo').addEventListener('click', () => { if (ready && strokes.length) { strokes.pop(); redraw(); markDirty(); } });
+let clearMark = null;
+$('undo').addEventListener('click', () => {
+  if (!ready) return;
+  if (strokes.length) { strokes.pop(); redraw(); markDirty(); return; }
+  // nothing left to take back on this page: undo 전체 지우기
+  if (clearMark && clearMark.pg === pages[pi] && clearMark.prev.length) {
+    strokes.push(...clearMark.prev); clearMark = null;
+    hint.hidden = true; redraw(); markDirty();
+  }
+});
 const clearBtn = $('clear');
 let armed = null;
 clearBtn.addEventListener('click', () => {
   if (!ready) return;
+  if (handBlocked()) return;
   if (!armed) {
     clearBtn.textContent = '한 번 더 누르면 지워져요';
     armed = setTimeout(() => { armed = null; clearBtn.textContent = '전체 지우기'; }, 2500);
     return;
   }
   clearTimeout(armed); armed = null; clearBtn.textContent = '전체 지우기';
+  // remember what was there, so 되돌리기 can bring the whole page back
+  clearMark = { pg: pages[pi], prev: strokes.slice() };
   strokes.length = 0; redraw(); if (mode === 'student') hint.hidden = false; markDirty();
+  toast('전체를 지웠어요. 되돌리기를 누르면 다시 나와요');
 });
 $('paper').addEventListener('click', () => {
   const pg = pages[pi]; if (!pg || mode !== 'student') return;

@@ -145,6 +145,10 @@ footer.pages { padding-block: 0 10px; display: flex; flex-wrap: wrap; align-item
 .save.err { color: var(--danger); }
 
 /* chat */
+.trash-panel { position: absolute; top: 12px; right: 16px; z-index: 6; width: min(360px, calc(100% - 32px)); max-height: calc(100% - 24px); overflow-y: auto; background: var(--bar); border: 1px solid var(--line); border-radius: 12px; padding: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.18); display: grid; gap: 8px; }
+.trash-panel .head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
+.trash-row { display: grid; grid-template-columns: 96px 1fr auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+.trash-thumb { width: 96px; border: 1px solid var(--line); border-radius: 4px; }
 #chat {
   position: absolute; right: max(24px, calc(env(safe-area-inset-right, 0px) + 24px)); bottom: 16px; width: min(340px, calc(100% - 48px)); max-height: 70%;
   background: var(--bar); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.18);
@@ -392,6 +396,8 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
     <div class="group">
       <button id="paper" aria-label="종이 바꾸기">줄공책</button>
       <button id="bg-btn">배경 넣기</button>
+      <button id="del-page">이 쪽 지우기</button>
+      <button id="trash-btn" hidden>지운 쪽</button>
       <input type="file" id="bg-file" accept="image/*,application/pdf" hidden>
       <button id="palm" aria-pressed="true">손바닥 차단</button>
       <button id="fs">전체 화면</button>
@@ -433,6 +439,11 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
       <div class="datestamp" id="datestamp"></div>
       <div class="seal" id="seal" hidden></div>
     </div>
+    <div id="trash" class="trash-panel" hidden>
+      <div class="head"><span>지운 쪽 되살리기</span><button id="trash-close">닫기</button></div>
+      <p class="small">지운 쪽은 30일 동안 여기에 남아 있어요.</p>
+      <div id="trash-list"></div>
+    </div>
     <div id="chat" hidden>
       <div class="head"><span id="chat-title">선생님과 이야기</span><button id="chat-close" aria-label="대화 닫기">닫기</button></div>
       <div class="msgs" id="msgs"></div>
@@ -445,7 +456,6 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
     <span class="pageno" id="pageno">1 / 1쪽</span>
     <button id="next">다음 쪽 ▶</button>
     <button id="add-page">+ 새 페이지</button>
-    <button id="del-page">이 쪽 지우기</button>
     <button id="chat-open">대화<span class="badge" id="chat-badge" hidden>0</span></button>
     <span class="save" id="save" aria-live="polite">저장됨</span>
   </footer>
@@ -453,7 +463,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=18"></script>
-<script type="module" src="app.js?v=18"></script>
+<script src="config.js?v=19"></script>
+<script type="module" src="app.js?v=19"></script>
 </body>
 </html>
