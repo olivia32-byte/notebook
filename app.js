@@ -103,7 +103,7 @@ const store = {
 // the student's live status for the teacher's grid; students may only change these fields
 let studentWrite = Promise.resolve();
 function touchStudent(patch) {
-  if (!R || mode !== 'student') return;
+  if (!R || mode !== 'student' || ownBook) return;
   studentWrite = studentWrite.then(() => R.student.update(patch)).catch(() => {});
 }
 
@@ -157,8 +157,39 @@ let notebooks = [];
 let coverColor = '#d8574a', newPaper = 'lined';
 let studentInfo = null;
 
+// 선생님 공책장: the same shelf and editor as a student's, stored under teachers/<uid>, seen by nobody else
+let ownBook = false;
+function ownRefs(uid) {
+  const books = db.collection(`teachers/${uid}/notebooks`);
+  const page = (nb, pg) => books.doc(nb).collection('pages').doc(pg);
+  return {
+    student: null, books, page,
+    pages: nb => books.doc(nb).collection('pages'),
+    fb: (nb, pg) => page(nb, pg).collection('notes').doc('teacher'),
+    chat: (nb, pg) => page(nb, pg).collection('chat'),
+  };
+}
+function setShelfChrome() {
+  document.querySelectorAll('#shelf .logout').forEach(b => { b.hidden = ownBook; });
+  $('shelf-home').hidden = !ownBook;
+  $('chat-open').hidden = ownBook;
+}
+async function enterOwnShelf() {
+  stopClass();
+  mode = 'student'; ownBook = true; studentInfo = null;
+  R = ownRefs(me.uid);
+  setShelfChrome();
+  show('shelf'); $('shelf-loading').hidden = false; $('books').textContent = ''; $('shelf-empty').hidden = true;
+  $('shelf-title').textContent = '선생님 공책장';
+  $('shelf-sub').textContent = '수업 준비, 개인 메모, 필기 예시를 모아요. 선생님만 볼 수 있어요.';
+  $('store-note').textContent = '이 공책은 학생에게 보이지 않아요. 보여 줄 때는 교실 TV로 화면을 미러링해 주세요.';
+  try { notebooks = await store.listNotebooks(); } catch (e) { notebooks = []; $('store-note').textContent = '공책을 불러오지 못했어요. ' + errText(e); }
+  renderShelf();
+}
+$('own-shelf').addEventListener('click', () => enterOwnShelf());
+$('shelf-home').addEventListener('click', async () => { deleting = false; $('del-mode').textContent = '공책 지우기'; $('del-mode').setAttribute('aria-pressed', 'false'); ownBook = false; setShelfChrome(); await enterTeacherHome(); });
 async function enterStudent(code, num) {
-  mode = 'student'; classId = code;
+  mode = 'student'; classId = code; ownBook = false; setShelfChrome();
   R = classRefs(code, 'n' + num);
   show('shelf'); $('shelf-loading').hidden = false; $('books').textContent = ''; $('shelf-empty').hidden = true;
   try { const d = await R.student.get(); studentInfo = d.exists ? d.data() : { num }; } catch (e) { studentInfo = { num }; }
@@ -238,7 +269,7 @@ $('new-form').addEventListener('submit', async e => {
 
 /* ================= teacher: classes ================= */
 async function enterTeacherHome() {
-  mode = 'teacher'; stopClass();
+  mode = 'teacher'; stopClass(); ownBook = false; setShelfChrome();
   show('classes');
   $('teacher-who').textContent = `${me.name || me.email} 선생님`;
   let list = [];

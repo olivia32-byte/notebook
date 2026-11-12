@@ -15,6 +15,12 @@ service cloud.firestore {
       return signedIn() && get(/databases/$(database)/documents/classes/$(c)/students/$(s)).data.uid == request.auth.uid;
     }
 
+    // 선생님 공책장: 선생님(구글 계정) 본인만 읽고 쓸 수 있어요
+    match /teachers/{uid}/{document=**} {
+      allow read, write: if signedIn() && request.auth.uid == uid
+                         && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+
     match /classes/{c} {
       allow read: if signedIn() && resource.data.teacherUid == request.auth.uid;
       allow create: if signedIn() && request.resource.data.teacherUid == request.auth.uid;

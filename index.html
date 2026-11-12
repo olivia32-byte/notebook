@@ -234,6 +234,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 <section id="classes" class="scroll" hidden>
   <div class="topbar gutter">
     <div class="grow"><h1>내 반</h1><p id="teacher-who"></p></div>
+    <button id="own-shelf" class="primary">내 공책장</button>
     <button class="logout">로그아웃</button>
   </div>
   <div class="body gutter">
@@ -254,6 +255,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 <section id="shelf" class="scroll" hidden>
   <div class="topbar gutter">
     <div class="grow"><h1 id="shelf-title">내 공책장</h1><p id="shelf-sub">과목마다 공책을 따로 만들어 차곡차곡 모아요</p></div>
+    <button id="shelf-home" hidden>← 내 반 목록</button>
     <button class="logout">로그아웃</button>
   </div>
   <div class="body gutter">
@@ -464,7 +466,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=20"></script>
-<script type="module" src="app.js?v=20"></script>
+<script src="config.js?v=21"></script>
+<script type="module" src="app.js?v=21"></script>
 </body>
 </html>
