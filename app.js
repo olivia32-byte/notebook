@@ -617,8 +617,10 @@ async function openStudentNotebook(n) {
   showPage(pages.length - 1);
   setSave('저장됨');
 }
+let tStudent = null;
 async function openTeacherNotebook(st, target) {
   if (!st) return;
+  tStudent = st;
   mode = 'teacher';
   seen[st.id] = Date.now(); lsPut('dn-seen', seen); updateCardText(st);
   R = classRefs(classId, st.id);
@@ -636,7 +638,7 @@ async function openTeacherNotebook(st, target) {
   await loadTeacherNotebook(first, cur && cur.nb === first.id ? cur.pg : null);
 }
 async function loadTeacherNotebook(n, pgId) {
-  await flushSave(); $('t-rename-box').hidden = true;
+  await flushSave(); $('t-rename-box').hidden = true; resetTDel();
   nb = n;
   try { pages = (await R.pages(n.id).orderBy('n').get()).docs.map(d => ({ ...d.data(), id: d.id })); } catch (e) { pages = []; }
   resize();
@@ -667,6 +669,36 @@ $('t-rename-box').addEventListener('submit', async e => {
     for (const list of Object.values(colBooks)) for (const n of list) if (n.id === nb.id) n.name = name;
     $('t-rename-box').hidden = true; toast(`공책 이름을 "${name}"(으)로 바꿨어요`);
   } catch (err) { toast('이름을 바꾸지 못했어요. ' + errText(err)); }
+});
+// teacher deletes the open student notebook: two taps; pages, backgrounds and feedback go with it
+let tDelTimer = null;
+function resetTDel() { const b = $('t-delete'); clearTimeout(tDelTimer); b.dataset.armed = ''; b.textContent = '공책 지우기'; b.classList.remove('danger'); }
+$('t-delete').addEventListener('click', async () => {
+  const b = $('t-delete');
+  if (!nb || !tStudent) return;
+  if (b.dataset.armed !== '1') {
+    b.dataset.armed = '1'; b.textContent = `"${nb.name}" 지울까요? 한 번 더 누르기`; b.classList.add('danger');
+    clearTimeout(tDelTimer); tDelTimer = setTimeout(resetTDel, 3000); return;
+  }
+  resetTDel(); b.disabled = true;
+  const book = nb, st = tStudent, refs = R;
+  try {
+    dirty = false; clearTimeout(saveTimer); clearPageSubs();
+    const all = await refs.pages(book.id).get();
+    for (const d of all.docs) {
+      if (!d.id.endsWith('-bg')) await refs.fb(book.id, d.id).delete().catch(() => {});
+      await refs.pages(book.id).doc(d.id).delete();
+    }
+    await refs.books.doc(book.id).delete();
+    if (st.current && st.current.nb === book.id) await refs.student.update({ current: null }).catch(() => {});
+    tNotebooks = tNotebooks.filter(x => x.id !== book.id);
+    if (colBooks[st.id]) colBooks[st.id] = colBooks[st.id].filter(x => x.id !== book.id);
+    const o = [...$('t-notebook').options].find(x => x.value === book.id); if (o) o.remove();
+    toast(`${st.num}번 "${book.name}"을(를) 지웠어요`);
+    if (tNotebooks[0]) { $('t-notebook').value = tNotebooks[0].id; await loadTeacherNotebook(tNotebooks[0], null); }
+    else { pages = []; nb = null; resize(); showEmptyTeacher(); }
+  } catch (err) { toast('지우지 못했어요. ' + errText(err)); }
+  finally { b.disabled = false; }
 });
 $('t-notebook').addEventListener('change', e => { const n = tNotebooks.find(x => x.id === e.target.value); if (n) loadTeacherNotebook(n, null); });
 
