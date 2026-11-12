@@ -576,7 +576,9 @@ const lctx = live.getContext('2d');
 const offBase = document.createElement('canvas'), bctx = offBase.getContext('2d');
 const offEdit = document.createElement('canvas'), ectx = offEdit.getContext('2d');
 const cssCache = {};
-const cssVar = n => cssCache[n] || (cssCache[n] = getComputedStyle(document.documentElement).getPropertyValue(n).trim());
+const CSS_FALLBACK = { '--paper': '#fffdf7', '--rule': '#b9d3ea', '--margin': '#f0a6a6', '--line': '#d5dde3' };
+// an empty value would leave the canvas colour at its default, black, so fall back to the usual colour
+const cssVar = n => cssCache[n] || (cssCache[n] = getComputedStyle(document.documentElement).getPropertyValue(n).trim()) || CSS_FALLBACK[n] || '#ffffff';
 const statusText = $('status-text'), dot = $('dot'), hint = $('hint');
 
 let mode = 'student';
@@ -1145,7 +1147,17 @@ function flushSave() {
   });
   return saving;
 }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushSave();
+  else repaintAll();
+});
+// Android Chrome may throw away canvas pictures to free memory (switching apps, sleep, low memory).
+// The opaque writing canvas then shows black. Rebuild every layer when that happens or when the tab comes back.
+function repaintAll() {
+  if ($('book').hidden) { if (!$('class').hidden) layoutKids(); return; }
+  for (const k of Object.keys(cssCache)) delete cssCache[k];
+  resetLayers(); redraw();
+}
 
 /* ---------- drawing ---------- */
 function resize() {
@@ -1423,3 +1435,7 @@ window.addEventListener('orientationchange', () => setTimeout(resize, 250));
 window.addEventListener('resize', () => { resize(); if (!$('class').hidden) layoutKids(); });
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
+
+// (after every canvas exists) rebuild the page when Chrome hands back a canvas it had emptied
+for (const c of [ink, live, offBase, offEdit, frame, paperC]) c.addEventListener('contextrestored', () => setTimeout(repaintAll, 0));
+window.addEventListener('pageshow', () => repaintAll());
