@@ -302,6 +302,10 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
       <button id="tab-live" aria-pressed="true">실시간 보드</button>
       <button id="tab-col" aria-pressed="false">공책별 모아보기</button>
     </div>
+    <div class="row" role="group" aria-label="칸 보기">
+      <button id="b-zoom" aria-pressed="true">쓴 부분 확대</button>
+      <button id="b-big" aria-pressed="false">크게 보기</button>
+    </div>
     <span class="small">반 코드</span><span class="code-box" id="class-code"></span>
     <button id="to-classes">내 반 목록</button>
   </div>
@@ -449,7 +453,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=16"></script>
-<script type="module" src="app.js?v=16"></script>
+<script src="config.js?v=17"></script>
+<script type="module" src="app.js?v=17"></script>
 </body>
 </html>

@@ -281,7 +281,7 @@ function enterClass(c) {
   $('class-title').textContent = c.name;
   $('class-code').textContent = c.id;
   stopClass();
-  $('kids').textContent = ''; cards = {}; layoutCount = -1; browse = null; colBooks = {}; $('col-name').textContent = ''; setClassTab(false);
+  $('kids').textContent = ''; cards = {}; students = []; layoutCount = -1; browse = null; colBooks = {}; $('col-name').textContent = ''; setClassTab(false);
   classUnsub = db.collection(`classes/${c.id}/students`).onSnapshot(snap => {
     students = snap.docs.map(d => ({ ...d.data(), id: d.id })).sort((a, b) => (a.num || 0) - (b.num || 0));
     renderClass(); renderPins(); renderHandoutKids(); syncMembers();
@@ -329,16 +329,28 @@ function renderClass() {
 // Fit every student on one screen: try each column count and keep the one that gives the biggest page.
 let layoutCount = -1;
 function layoutKids() {
-  layoutCount = students.length;
-  if (colMode) { layoutCollection(); return; }
-  if (fitGrid($('kids'), students.length)) Object.keys(cards).forEach(drawThumb);
+  if (colMode) { layoutCount = students.length; layoutCollection(); return; }
+  // remember the count only once the grid really got laid out, so a later update tries again
+  if (fitGrid($('kids'), students.length)) { layoutCount = students.length; Object.keys(cards).forEach(drawThumb); }
+  else layoutCount = -1;
 }
 function fitGrid(box, n) {
   if (!n || $('class').hidden || box.hidden) return false;
   const GAP = 2, top = $('class').querySelector('.topbar'), bar = $('col-bar');
   const W = box.clientWidth - GAP * 2;
+  if (W < 50) return false;
   const H = Math.max(240, $('class').clientHeight - top.offsetHeight - (bar.hidden ? 0 : bar.offsetHeight) - GAP * 2);
   let best = { s: 0, cols: 1, ch: H, cw: W };
+  if (boardBig) {
+    // 크게 보기: bigger tiles, scroll down for the rest of the class
+    const cols = Math.max(1, Math.min(n, Math.round(W / 380)));
+    const cw = (W - (cols - 1) * GAP) / cols, info = 46;
+    best = { cols, cw, ch: (boardZoom ? cw * 0.75 : cw * PAGE_H / PAGE_W) + info };
+    box.style.setProperty('--cols', best.cols);
+    box.style.setProperty('--rowh', Math.floor(best.ch) + 'px');
+    box.classList.remove('tiny');
+    return true;
+  }
   for (let cols = 1; cols <= n; cols++) {
     const rows = Math.ceil(n / cols);
     const cw = (W - (cols - 1) * GAP) / cols, ch = (H - (rows - 1) * GAP) / rows;
@@ -370,6 +382,7 @@ function thumbLater(sid) {
 function drawThumb(sid) {
   const c = cards[sid]; if (c) paintThumb(c.cv, c.el, thumbData[sid]);
 }
+let boardZoom = lsGet('dn-board-zoom') !== false, boardBig = lsGet('dn-board-big') === true;
 function paintThumb(cv, el, data) {
   const r = cv.getBoundingClientRect(), k = window.devicePixelRatio || 1;
   const w = Math.round(r.width * k) || 300, h = Math.round(r.height * k) || 400;
@@ -377,17 +390,42 @@ function paintThumb(cv, el, data) {
   const g = cv.getContext('2d');
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.fillStyle = cssVar('--paper'); g.fillRect(0, 0, w, h);
-  // the whole page, scaled to fit the tile; the name bar covers the bottom edge, so leave room for it
   const infoH = el.querySelector('.info').offsetHeight * k;
-  const s = Math.min(w / PAGE_W, Math.max(h - infoH, h * 0.6) / PAGE_H);
-  const ox = (w - PAGE_W * s) / 2;
-  if (ox > 2) { g.strokeStyle = cssVar('--line'); g.lineWidth = 1; g.strokeRect(ox + 0.5, 0.5, PAGE_W * s - 1, PAGE_H * s); }
-  if (data && data.strokes) {
-    g.translate(ox, 0);
-    for (const o of data.strokes) drawStroke(g, decode(o), s);
-    g.setTransform(1, 0, 0, 1, 0, 0);
+  const availH = Math.max(h - infoH, h * 0.6);
+  const strokes = data && data.strokes ? data.strokes.map(decode) : [];
+  // what part of the page to show: the whole page, or (쓴 부분 확대) just the area with writing
+  let bx = 0, by = 0, bw = PAGE_W, bh = PAGE_H;
+  if (boardZoom && strokes.length) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const st of strokes) if (!st.erase) for (const q of st.pts) { if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; }
+    if (x1 >= x0) {
+      const pad = 24, minW = 260, minH = 200;
+      x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+      if (x1 - x0 < minW) { const c = (x0 + x1) / 2; x0 = c - minW / 2; x1 = c + minW / 2; }
+      if (y1 - y0 < minH) { y1 = y0 + minH; }
+      bx = Math.max(0, x0); by = Math.max(0, y0); bw = Math.min(PAGE_W, x1) - bx; bh = Math.min(PAGE_H, y1) - by;
+    }
   }
+  const full = Math.min(w / PAGE_W, availH / PAGE_H);
+  const s = Math.min(w / bw, availH / bh, full * 3);
+  const ox = (w - bw * s) / 2 - bx * s, oy = -by * s;
+  if (!boardZoom && (w - PAGE_W * s) / 2 > 2) { g.strokeStyle = cssVar('--line'); g.lineWidth = 1; g.strokeRect(ox + 0.5, 0.5, PAGE_W * s - 1, PAGE_H * s); }
+  // small previews make thin pencil lines vanish: thicken them a little
+  const boost = Math.min(2.5, Math.max(1, 0.6 / s));
+  g.save(); g.beginPath(); g.rect(0, 0, w, availH + 1); g.clip();
+  g.translate(ox, oy);
+  for (const st of strokes) drawStroke(g, boost > 1 && !st.erase ? { ...st, size: st.size * boost } : st, s);
+  g.restore();
+  g.globalCompositeOperation = 'source-over';
 }
+function setBoardView() {
+  $('b-zoom').setAttribute('aria-pressed', String(boardZoom));
+  $('b-big').setAttribute('aria-pressed', String(boardBig));
+  layoutKids();
+}
+$('b-zoom').addEventListener('click', () => { boardZoom = !boardZoom; lsPut('dn-board-zoom', boardZoom); setBoardView(); });
+$('b-big').addEventListener('click', () => { boardBig = !boardBig; lsPut('dn-board-big', boardBig); setBoardView(); });
+setTimeout(setBoardView, 0);
 
 /* ---------- after class: one notebook name, every student ---------- */
 // The teacher picks a notebook name (e.g. "수학") and a page; every student's copy is shown side by side.
