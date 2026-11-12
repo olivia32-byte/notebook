@@ -304,6 +304,11 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
   <div class="kids" id="kids"></div>
   <div class="col-bar gutter" id="col-bar" hidden>
     <span class="label">공책</span><select id="col-name" aria-label="모아 볼 공책"></select>
+    <button id="col-rename">이 이름 모두 바꾸기</button>
+    <form class="row" id="col-rename-box" hidden>
+      <input type="text" id="col-rename-input" maxlength="20" aria-label="새 공책 이름" style="width:160px">
+      <button type="submit" class="primary">모두 바꾸기</button><button type="button" id="col-rename-cancel">취소</button>
+    </form>
     <span class="label">쪽</span><select id="col-page" aria-label="모아 볼 쪽"></select>
     <span class="small" id="col-status"></span>
   </div>
@@ -390,6 +395,11 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
     <div class="group">
       <span class="label">공책</span>
       <select id="t-notebook" aria-label="학생 공책 고르기"></select>
+      <button id="t-rename">이름 바꾸기</button>
+      <form class="row" id="t-rename-box" hidden>
+        <input type="text" id="t-rename-input" maxlength="20" aria-label="새 공책 이름" style="width:160px">
+        <button type="submit" class="primary">저장</button><button type="button" id="t-rename-cancel">취소</button>
+      </form>
     </div>
     <div class="group" id="t-browse" hidden>
       <button id="t-prev-kid">◀ 이전 학생</button>
@@ -434,7 +444,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=12"></script>
-<script type="module" src="app.js?v=12"></script>
+<script src="config.js?v=13"></script>
+<script type="module" src="app.js?v=13"></script>
 </body>
 </html>

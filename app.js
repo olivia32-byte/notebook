@@ -91,6 +91,11 @@ function classRefs(code, sid) {
 const store = {
   async listNotebooks() { const s = await R.books.get(); return s.docs.map(d => ({ ...d.data(), id: d.id })); },
   async putNotebook(nb) { const { id, ...b } = nb; await R.books.doc(id).set(b); },
+  // later saves only touch the page count and date, so a name the teacher changed is not written back over
+  async touchNotebook(nb) {
+    try { await R.books.doc(nb.id).update({ pages: nb.pages, updated: nb.updated }); }
+    catch (e) { if (e && e.code === 'not-found') await store.putNotebook(nb); else throw e; }
+  },
   async listPages(nbId) { const s = await R.pages(nbId).orderBy('n').get(); return s.docs.map(d => ({ ...d.data(), id: d.id })); },
   async putPage(nbId, pg) { const { id, ...b } = pg; await R.page(nbId, id).set(b); },
 };
@@ -474,6 +479,24 @@ async function loadColTile(it) {
     t.when.textContent = done ? (d.seal ? `피드백 함 · ${d.seal}` : '피드백 함') : '';
   } catch (e) { if (colTiles[it.st.id] === t) t.where.textContent = '불러오지 못했어요'; }
 }
+// rename every student's notebook with this name at once (e.g. "수학 공책" → "수학" so they group together)
+$('col-rename').addEventListener('click', () => { if ($('col-name').value) openRename($('col-rename-box'), $('col-rename-input'), $('col-name').value); });
+$('col-rename-cancel').addEventListener('click', () => { $('col-rename-box').hidden = true; });
+$('col-rename-box').addEventListener('submit', async e => {
+  e.preventDefault();
+  const from = $('col-name').value, name = $('col-rename-input').value.trim();
+  if (!name || !from) return;
+  if (name === from) { $('col-rename-box').hidden = true; return; }
+  const jobs = [];
+  for (const st of students) for (const n of colBooks[st.id] || []) if (normName(n.name) === from) {
+    jobs.push(classRefs(classId, st.id).books.doc(n.id).update({ name }).then(() => { n.name = name; }));
+  }
+  const res = await Promise.allSettled(jobs), bad = res.filter(r => r.status === 'rejected').length;
+  $('col-rename-box').hidden = true;
+  toast(bad ? `${jobs.length - bad}권은 바꿨지만 ${bad}권은 바꾸지 못했어요` : `${jobs.length}권의 이름을 "${name}"(으)로 바꿨어요`);
+  lsPut('dn-col-name', name); $('col-name').value = '';
+  loadCollection();
+});
 $('col-name').addEventListener('change', () => { $('col-page').value = 'last'; renderCollection(); });
 $('col-page').addEventListener('change', renderCollection);
 function openFromCollection(i) {
@@ -613,7 +636,7 @@ async function openTeacherNotebook(st, target) {
   await loadTeacherNotebook(first, cur && cur.nb === first.id ? cur.pg : null);
 }
 async function loadTeacherNotebook(n, pgId) {
-  await flushSave();
+  await flushSave(); $('t-rename-box').hidden = true;
   nb = n;
   try { pages = (await R.pages(n.id).orderBy('n').get()).docs.map(d => ({ ...d.data(), id: d.id })); } catch (e) { pages = []; }
   resize();
@@ -628,6 +651,23 @@ function showEmptyTeacher() {
   $('pageno').textContent = '0쪽'; $('prev').disabled = $('next').disabled = true;
   $('datestamp').textContent = ''; renderSeal(); redraw(); setSave('');
 }
+// teacher renames the open student notebook
+function openRename(box, input, value) { box.hidden = false; input.value = value; input.focus(); input.select(); }
+$('t-rename').addEventListener('click', () => { if (nb) openRename($('t-rename-box'), $('t-rename-input'), nb.name); });
+$('t-rename-cancel').addEventListener('click', () => { $('t-rename-box').hidden = true; });
+$('t-rename-box').addEventListener('submit', async e => {
+  e.preventDefault();
+  const name = $('t-rename-input').value.trim();
+  if (!name || !nb) return;
+  if (name === nb.name) { $('t-rename-box').hidden = true; return; }
+  try {
+    await R.books.doc(nb.id).update({ name });
+    nb.name = name;
+    const o = [...$('t-notebook').options].find(x => x.value === nb.id); if (o) o.textContent = name;
+    for (const list of Object.values(colBooks)) for (const n of list) if (n.id === nb.id) n.name = name;
+    $('t-rename-box').hidden = true; toast(`공책 이름을 "${name}"(으)로 바꿨어요`);
+  } catch (err) { toast('이름을 바꾸지 못했어요. ' + errText(err)); }
+});
 $('t-notebook').addEventListener('change', e => { const n = tNotebooks.find(x => x.id === e.target.value); if (n) loadTeacherNotebook(n, null); });
 
 function setEditorChrome() {
@@ -745,7 +785,7 @@ $('del-page').addEventListener('click', async () => {
     // keep page numbers in a row so the teacher's board shows the right page number
     for (const p of pages.slice(at)) { p.n -= 1; R.page(book.id, p.id).update({ n: p.n }).catch(() => {}); }
     book.pages = pages.length; book.updated = today();
-    await store.putNotebook(book); book._savedPages = pages.length;
+    await store.touchNotebook(book); book._savedPages = pages.length;
     toast(`${at + 1}쪽을 지웠어요`);
     showPage(Math.min(at, pages.length - 1));
   } catch (err) { toast('지우지 못했어요. ' + errText(err)); showPage(pi); }
@@ -951,7 +991,7 @@ $('bg-file').addEventListener('change', async e => {
       await savePageNow(pg);
       if (firstIdx < 0) firstIdx = pages.indexOf(pg);
     }
-    if (pics.length > 1) { nb.pages = pages.length; nb.updated = today(); await store.putNotebook(nb); nb._savedPages = pages.length; }
+    if (pics.length > 1) { nb.pages = pages.length; nb.updated = today(); await store.touchNotebook(nb); nb._savedPages = pages.length; }
     showPage(firstIdx);
     setSave(pics.truncated ? `앞 ${pics.length}쪽만 넣었어요` : pics.length > 1 ? `PDF ${pics.length}쪽을 넣었어요` : '배경을 넣었어요');
   } catch (err) { setSave(picErr(err), true); }
@@ -1053,7 +1093,7 @@ function flushSave() {
       await store.putPage(book.id, body);
       const now = Date.now();
       if (book._savedPages !== pages.length || now - (book._savedAt || 0) > 10 * 60 * 1000) {
-        await store.putNotebook(book); book._savedPages = pages.length; book._savedAt = now;
+        await store.touchNotebook(book); book._savedPages = pages.length; book._savedAt = now;
       }
       if (now - lastTouch > 20000) { lastTouch = now; touchStudent({ current: { nb: book.id, nbName: book.name, pg: pg.id, n: pg.n }, updated: now }); }
       return sizeOf(enc);
