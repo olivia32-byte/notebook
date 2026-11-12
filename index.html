@@ -148,6 +148,7 @@ footer.pages { padding-block: 0 10px; display: flex; flex-wrap: wrap; align-item
 .trash-panel { position: absolute; top: 12px; right: 16px; z-index: 6; width: min(360px, calc(100% - 32px)); max-height: calc(100% - 24px); overflow-y: auto; background: var(--bar); border: 1px solid var(--line); border-radius: 12px; padding: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.18); display: grid; gap: 8px; }
 .trash-panel .head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
 .trash-row { display: grid; grid-template-columns: 96px 1fr auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+.trash-btns { display: grid; gap: 6px; }
 .trash-thumb { width: 96px; border: 1px solid var(--line); border-radius: 4px; }
 #chat {
   position: absolute; right: max(24px, calc(env(safe-area-inset-right, 0px) + 24px)); bottom: 16px; width: min(340px, calc(100% - 48px)); max-height: 70%;
@@ -441,7 +442,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
     </div>
     <div id="trash" class="trash-panel" hidden>
       <div class="head"><span>지운 쪽 되살리기</span><button id="trash-close">닫기</button></div>
-      <p class="small">지운 쪽은 30일 동안 여기에 남아 있어요.</p>
+      <div class="row" style="justify-content:space-between"><p class="small" style="margin:0">지운 쪽은 30일 동안 여기에 남아 있어요.</p><button id="trash-empty">모두 비우기</button></div>
       <div id="trash-list"></div>
     </div>
     <div id="chat" hidden>
@@ -463,7 +464,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=19"></script>
-<script type="module" src="app.js?v=19"></script>
+<script src="config.js?v=20"></script>
+<script type="module" src="app.js?v=20"></script>
 </body>
 </html>

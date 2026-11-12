@@ -916,6 +916,7 @@ async function refreshTrash() {
   if (!$('trash').hidden) renderTrash();
 }
 function renderTrash() {
+  { const e = $('trash-empty'); e.disabled = false; e.dataset.armed = ''; e.textContent = '모두 비우기'; e.classList.remove('danger'); }
   const box = $('trash-list'); box.textContent = '';
   if (!trash.length) { $('trash').hidden = true; return; }
   for (const t of trash) {
@@ -926,13 +927,38 @@ function renderTrash() {
     info.textContent = `${t.tn}쪽이었어요 · ${d.getMonth() + 1}월 ${d.getDate()}일 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}에 지움`;
     const btn = document.createElement('button'); btn.className = 'primary'; btn.textContent = '되살리기';
     btn.addEventListener('click', () => restorePage(t, btn));
-    row.append(cv, info, btn); box.append(row);
+    const kill = document.createElement('button'); kill.textContent = '완전히 지우기';
+    kill.addEventListener('click', () => armThen(kill, '정말 지울까요?', () => purge([t])));
+    const btns = document.createElement('div'); btns.className = 'trash-btns'; btns.append(btn, kill);
+    row.append(cv, info, btns); box.append(row);
     cv.width = 96; cv.height = Math.round(96 * PAGE_H / PAGE_W);
     const g = cv.getContext('2d'); g.fillStyle = cssVar('--paper'); g.fillRect(0, 0, cv.width, cv.height);
     for (const o of t.strokes || []) drawStroke(g, decode(o), cv.width / PAGE_W);
     g.globalCompositeOperation = 'source-over';
   }
 }
+// two taps for anything that cannot be undone
+function armThen(b, ask, run) {
+  if (handBlocked()) return;
+  if (b.dataset.armed !== '1') {
+    const label = b.textContent; b.dataset.armed = '1'; b.textContent = ask; b.classList.add('danger');
+    setTimeout(() => { if (b.isConnected) { b.dataset.armed = ''; b.textContent = label; b.classList.remove('danger'); } }, 3000);
+    return;
+  }
+  b.disabled = true; run();
+}
+async function purge(list) {
+  const book = nb;
+  try {
+    for (const t of list) {
+      await R.pages(book.id).doc(t.id).delete();
+      if (t.bg && !t.bgSrc) await R.page(book.id, t.of + '-bg').delete().catch(() => {});
+    }
+    toast(list.length > 1 ? `지운 쪽 ${list.length}개를 완전히 지웠어요` : '완전히 지웠어요');
+  } catch (err) { toast('지우지 못했어요. ' + errText(err)); }
+  await refreshTrash();
+}
+$('trash-empty').addEventListener('click', () => armThen($('trash-empty'), '정말 모두 비울까요?', () => purge(trash.slice())));
 $('trash-btn').addEventListener('click', () => { $('trash').hidden = !$('trash').hidden; if (!$('trash').hidden) renderTrash(); });
 $('trash-close').addEventListener('click', () => { $('trash').hidden = true; });
 async function restorePage(t, btn) {
