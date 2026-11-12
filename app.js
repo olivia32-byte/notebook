@@ -164,6 +164,26 @@ async function enterStudent(code, num) {
   try { notebooks = await store.listNotebooks(); } catch (e) { notebooks = []; $('store-note').textContent = '공책을 불러오지 못했어요. ' + errText(e); }
   renderShelf();
 }
+let deleting = false;
+$('del-mode').addEventListener('click', () => {
+  deleting = !deleting;
+  $('del-mode').textContent = deleting ? '지우기 끝내기' : '공책 지우기';
+  $('del-mode').setAttribute('aria-pressed', String(deleting));
+  renderShelf();
+});
+async function deleteNotebook(n, b, tag) {
+  b.disabled = true; tag.textContent = '지우는 중…';
+  try {
+    // pages, their background pictures, then the notebook itself
+    const all = await R.pages(n.id).get();
+    for (const d of all.docs) await R.pages(n.id).doc(d.id).delete();
+    await R.books.doc(n.id).delete();
+    notebooks = notebooks.filter(x => x.id !== n.id);
+    if (studentInfo && studentInfo.current && studentInfo.current.nb === n.id) touchStudent({ current: null, updated: Date.now() });
+    toast(`"${n.name}"을(를) 지웠어요`);
+    renderShelf();
+  } catch (err) { b.disabled = false; tag.textContent = '지우지 못했어요'; }
+}
 function renderShelf() {
   const box = $('books'); box.textContent = '';
   $('shelf-loading').hidden = true;
@@ -176,7 +196,15 @@ function renderShelf() {
     const meta = document.createElement('div'); meta.className = 'meta';
     meta.textContent = `${n.pages || 1}쪽 · ${fmtDate(n.updated || n.created)}`;
     b.append(lab, meta);
-    b.addEventListener('click', () => openStudentNotebook(n));
+    if (deleting) {
+      b.classList.add('deleting');
+      const tag = document.createElement('div'); tag.className = 'del-tag'; tag.textContent = '눌러서 지우기';
+      b.append(tag);
+      b.addEventListener('click', () => {
+        if (b.dataset.armed !== '1') { b.dataset.armed = '1'; tag.textContent = '한 번 더 누르면 지워져요'; setTimeout(() => { b.dataset.armed = ''; tag.textContent = '눌러서 지우기'; }, 3000); return; }
+        deleteNotebook(n, b, tag);
+      });
+    } else b.addEventListener('click', () => openStudentNotebook(n));
     box.append(b);
   }
 }
@@ -391,7 +419,11 @@ let ready = true;
 let pageSubs = [];
 let tNotebooks = [];
 let color = '#1b1b1b', size = 4, tool = 'pen';
-let palmBlock = true, penSeen = false;
+// Palm rejection can only tell a pen from a hand once this tablet has reported a pen. That used to be
+// forgotten on every reload, so until a student's first pen stroke, fingers and palms drew too.
+// Now a pen seen once (even hovering) is remembered on this tablet.
+let palmBlock = true, penSeen = lsGet('dn-pen') === true;
+function notePen() { if (!penSeen) { penSeen = true; lsPut('dn-pen', true); } }
 let current = null, activeId = null, dpr = 1, pendingRedraw = false;
 // Every page is the same sheet of paper, PAGE_W × PAGE_H in page units, scaled to fit the screen whole.
 // Strokes are stored in page units, so a page looks the same upright, sideways, and on the teacher's computer.
@@ -963,7 +995,7 @@ function pt(e) {
 }
 function setStatus(type) {
   if (type === 'pen') { dot.classList.add('pen'); statusText.textContent = palmBlock ? 'S펜 인식됨 · 손 터치 무시 중' : 'S펜 인식됨'; }
-  else if (type === 'touch') statusText.textContent = '손가락으로 쓰는 중';
+  else if (type === 'touch') statusText.textContent = palmBlock && !penSeen ? '아직 S펜을 못 찾아서 손가락도 써져요 · S펜을 화면에 가까이 대 보세요' : '손가락으로 쓰는 중';
   else statusText.textContent = '마우스로 쓰는 중';
 }
 const allowed = e => ready && !!pages[pi] && !(e.pointerType === 'touch' && palmBlock && penSeen);
@@ -1000,7 +1032,7 @@ function armHold(p) {
 
 sheet.addEventListener('pointerdown', e => {
   if (e.pointerType === 'pen') {
-    penSeen = true;
+    notePen();
     if (current && current.type === 'touch' && palmBlock) {
       if (!current.live) { strokes.pop(); redraw(); }
       clearTimeout(holdTimer); clearLive(); current = null; activeId = null;
@@ -1018,7 +1050,10 @@ sheet.addEventListener('pointerdown', e => {
   hint.hidden = true;
   setStatus(e.pointerType);
 });
+// the S Pen reports itself while hovering above the screen, before it touches
+sheet.addEventListener('pointerover', e => { if (e.pointerType === 'pen') notePen(); });
 sheet.addEventListener('pointermove', e => {
+  if (e.pointerType === 'pen' && !penSeen) notePen();
   if (!current || e.pointerId !== activeId) return;
   e.preventDefault();
   if (current.snap) {
@@ -1098,7 +1133,7 @@ $('paper').addEventListener('click', () => {
 const palmBtn = $('palm');
 palmBtn.addEventListener('click', () => {
   palmBlock = !palmBlock; palmBtn.setAttribute('aria-pressed', String(palmBlock));
-  statusText.textContent = palmBlock ? '손바닥 차단 켜짐' : '손바닥 차단 꺼짐 · 손가락도 써져요';
+  statusText.textContent = palmBlock ? (penSeen ? '손바닥 차단 켜짐' : '손바닥 차단 켜짐 · S펜을 한 번 대면 시작돼요') : '손바닥 차단 꺼짐 · 손가락도 써져요';
 });
 const fsBtn = $('fs');
 const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;

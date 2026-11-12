@@ -156,6 +156,8 @@ footer.pages { padding-block: 0 10px; display: flex; flex-wrap: wrap; align-item
 #chat.typing .head { display: none; }
 .kid-pick { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 14px; min-height: 40px; box-sizing: border-box; }
 .kid-pick input { width: 18px; height: 18px; accent-color: var(--accent); }
+.book.deleting { outline: 3px dashed var(--danger); outline-offset: 3px; }
+.del-tag { position: absolute; left: 26px; right: 14px; bottom: 44px; background: var(--danger); color: #fff; border-radius: 6px; padding: 6px 8px; font-size: 13px; font-weight: 600; text-align: center; }
 .badge { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 12px; line-height: 20px; text-align: center; margin-left: 4px; }
 
 #toast {
@@ -237,7 +239,7 @@ footer.pages { padding-block: 0 10px; display: flex; flex-wrap: wrap; align-item
   </div>
   <div class="body gutter">
     <div>
-      <h2>내 공책</h2>
+      <div class="row" style="justify-content:space-between;margin-bottom:10px"><h2 style="margin:0">내 공책</h2><button id="del-mode" aria-pressed="false">공책 지우기</button></div>
       <div class="books" id="books"></div>
       <div class="empty" id="shelf-empty" hidden>아직 공책이 없어요. 아래에서 첫 공책을 만들어 보세요.</div>
       <div class="empty" id="shelf-loading">공책을 불러오는 중이에요…</div>
