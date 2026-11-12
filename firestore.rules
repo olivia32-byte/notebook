@@ -64,6 +64,10 @@ service cloud.firestore {
               allow read: if isTeacher(c) || isStudent(c, s);
               allow create: if (isTeacher(c) && request.resource.data.from == 't')
                             || (isStudent(c, s) && request.resource.data.from == 's');
+              // 선생님은 자기가 보낸 메시지만 고치거나 지울 수 있어요
+              allow update: if isTeacher(c) && resource.data.from == 't' && request.resource.data.from == 't'
+                            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'edited']);
+              allow delete: if isTeacher(c) && resource.data.from == 't';
             }
           }
         }

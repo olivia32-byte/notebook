@@ -155,6 +155,10 @@ footer.pages { padding-block: 0 10px; display: flex; flex-wrap: wrap; align-item
 .msg { max-width: 85%; padding: 8px 11px; border-radius: 12px; font-size: 14px; line-height: 1.45; word-break: break-word; -webkit-user-select: text; user-select: text; }
 .msg.mine { align-self: flex-end; background: var(--accent); color: var(--bar); border-bottom-right-radius: 4px; }
 .msg.theirs { align-self: flex-start; background: var(--bg); border-bottom-left-radius: 4px; }
+.msg.editable { cursor: pointer; }
+.msg.editing { max-width: 100%; width: 100%; background: var(--bg); color: var(--fg); }
+.msg-edit { display: grid; gap: 6px; }
+.msg-edit input { width: 100%; }
 .msg time { display: block; font-size: 11px; opacity: .75; margin-top: 2px; }
 #chat form { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
 #chat form input { flex: 1; }
@@ -445,7 +449,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=15"></script>
-<script type="module" src="app.js?v=15"></script>
+<script src="config.js?v=16"></script>
+<script type="module" src="app.js?v=16"></script>
 </body>
 </html>

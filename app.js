@@ -729,7 +729,7 @@ function showPage(i) {
   $('pageno').textContent = `${pi + 1} / ${pages.length}쪽`;
   $('prev').disabled = pi === 0;
   $('next').disabled = pi === pages.length - 1;
-  overlay = []; base = []; seal = ''; msgs = []; chatKey = ''; renderChat();
+  overlay = []; base = []; seal = ''; msgs = []; chatKey = ''; editingMsg = null; renderChat();
   $('bg-btn').textContent = pg.bg ? '배경 빼기' : '배경 넣기';
   ensureBg(pg);
   if (mode === 'student') {
@@ -859,7 +859,7 @@ function subscribeChat(pg) {
   chatKey = (mode === 'teacher' ? 't/' : 's/') + nb.id + '/' + pg.id; // per role: a teacher may also try the student side on the same tablet
   pageSubs.push(R.chat(nb.id, pg.id).orderBy('at').onSnapshot(snap => {
     const before = msgs.length;
-    msgs = snap.docs.map(d => d.data());
+    msgs = snap.docs.map(d => ({ ...d.data(), _id: d.id }));
     const mine = mode === 'teacher' ? 't' : 's';
     const fresh = msgs.slice(before).filter(m => m.from !== mine);
     if (!first && fresh.length) toast(mode === 'teacher' ? '학생이 메시지를 보냈어요' : '선생님이 메시지를 보냈어요');
@@ -871,17 +871,50 @@ function renderChat() {
   const box = $('msgs'); box.textContent = '';
   const mine = mode === 'teacher' ? 't' : 's';
   if (!msgs.length) { const p = document.createElement('p'); p.className = 'small'; p.textContent = '이 페이지에 대해 이야기를 나눠요.'; box.append(p); }
+  const draft = editingMsg && $('msg-edit-input') ? $('msg-edit-input').value : null;
   for (const m of msgs) {
     const d = document.createElement('div'); d.className = 'msg ' + (m.from === mine ? 'mine' : 'theirs');
+    const canEdit = mode === 'teacher' && m.from === 't';
+    if (canEdit && editingMsg === m._id) { d.classList.add('editing'); d.append(msgEditForm(m, draft)); box.append(d); continue; }
     d.textContent = m.text;
-    const t = document.createElement('time'); t.textContent = (m.from === 't' ? '선생님 · ' : '학생 · ') + fmtTime(m.at);
-    d.append(t); box.append(d);
+    const t = document.createElement('time');
+    t.textContent = (m.from === 't' ? '선생님 · ' : '학생 · ') + fmtTime(m.at) + (m.edited ? ' · 고침' : '');
+    d.append(t);
+    if (canEdit) { d.classList.add('editable'); d.title = '눌러서 고치기'; d.addEventListener('click', () => { editingMsg = m._id; renderChat(); const i = $('msg-edit-input'); if (i) { i.focus(); i.select(); } }); }
+    box.append(d);
   }
-  box.scrollTop = box.scrollHeight;
+  if (!editingMsg) box.scrollTop = box.scrollHeight;
   if (!$('chat').hidden) markChatRead();
   const readAt = chatRead[chatKey] || 0;
   const unread = msgs.filter(m => m.from !== mine && (m.at || 0) > readAt).length;
   const badge = $('chat-badge'); badge.hidden = unread === 0; badge.textContent = unread;
+}
+// the teacher can fix or remove a feedback message already sent: tap it
+let editingMsg = null;
+function msgEditForm(m, draft) {
+  const f = document.createElement('form'); f.className = 'msg-edit';
+  const i = document.createElement('input'); i.type = 'text'; i.id = 'msg-edit-input'; i.maxLength = 300; i.value = draft != null ? draft : m.text; i.setAttribute('aria-label', '메시지 고치기');
+  i.addEventListener('focus', () => $('chat').classList.add('typing'));
+  const row = document.createElement('div'); row.className = 'row';
+  const save = document.createElement('button'); save.type = 'submit'; save.className = 'primary'; save.textContent = '저장';
+  const del = document.createElement('button'); del.type = 'button'; del.textContent = '지우기';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = '취소';
+  row.append(save, del, cancel); f.append(i, row);
+  const ref = () => R.chat(nb.id, pages[pi].id).doc(m._id);
+  const done = () => { editingMsg = null; $('chat').classList.remove('typing'); renderChat(); };
+  cancel.addEventListener('click', done);
+  del.addEventListener('click', async () => {
+    if (del.dataset.armed !== '1') { del.dataset.armed = '1'; del.textContent = '정말 지우기'; del.classList.add('danger'); return; }
+    try { await ref().delete(); done(); } catch (err) { toast('지우지 못했어요. ' + errText(err)); }
+  });
+  f.addEventListener('submit', async e => {
+    e.preventDefault();
+    const text = i.value.trim();
+    if (!text) return;
+    if (text === m.text) { done(); return; }
+    try { await ref().update({ text, edited: Date.now() }); done(); } catch (err) { toast('고치지 못했어요. ' + errText(err)); }
+  });
+  return f;
 }
 $('chat-open').addEventListener('click', () => { $('chat').hidden = !$('chat').hidden; markChatRead(); renderChat(); if (!$('chat').hidden) $('chat-input').focus(); });
 $('chat-close').addEventListener('click', () => { $('chat').hidden = true; });
