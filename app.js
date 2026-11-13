@@ -104,7 +104,8 @@ const store = {
 let studentWrite = Promise.resolve();
 function touchStudent(patch) {
   if (!R || mode !== 'student' || ownBook) return;
-  studentWrite = studentWrite.then(() => R.student.update(patch)).catch(() => {});
+  // started at once; Firestore keeps the order, so no need to wait for the previous answer
+  studentWrite = R.student.update(patch).catch(() => {});
 }
 
 /* ================= start & sign-in ================= */
@@ -149,7 +150,7 @@ $('t-login').addEventListener('click', async () => {
   try { await backend.teacherLogin(); } catch (err) { $('t-err').textContent = errText(err); }
 });
 document.querySelectorAll('.logout').forEach(b => b.addEventListener('click', async () => {
-  await flushSave(); stopClass(); stopNotices(); clearPageSubs(); await backend.logout();
+  flushSave(); await waitForSaves(5000); stopClass(); stopNotices(); clearPageSubs(); await backend.logout();
 }));
 
 /* ================= student: bookshelf ================= */
@@ -1009,13 +1010,25 @@ function showPage(i) {
       if ((data.bg || 0) !== (pg.bg || 0)) { pg.bg = data.bg || 0; pg.bgSrc = data.bgSrc || ''; paperKey = ''; ensureBg(pg); }
       safeRedraw();
     }, () => {}));
-    R.fb(nb.id, pg.id).get().then(d => {
-      if (pages[pi] !== pg) return;
-      const data = d.exists ? d.data() : {};
+    // the teacher's own feedback: the copy on this tablet shows at once, the server copy follows
+    const fbRef = R.fb(nb.id, pg.id), fbKey = nb.id + '/' + pg.id;
+    const takeFb = d => {
+      const data = d && d.exists ? d.data() : {};
       strokes = (data.strokes || []).map(decode); seal = data.seal || '';
       fbBase = { pg, ink: inkCount(strokes), seal };
       ready = true; renderSeal(); redraw();
-    }).catch(() => { ready = true; });
+    };
+    let cachedSeq = null;
+    fbRef.getCache().then(d => {
+      if (!d || pages[pi] !== pg || ready) return;
+      takeFb(d); cachedSeq = latestSave.get(fbKey);
+    }).catch(() => {});
+    fbRef.get().then(d => {
+      if (pages[pi] !== pg) return;
+      // the teacher has already started writing on the tablet copy: keep that
+      if (ready && (dirty || latestSave.get(fbKey) !== cachedSeq)) return;
+      takeFb(d);
+    }).catch(() => { if (pages[pi] === pg) ready = true; });
   }
   subscribeChat(pg);
   renderSeal();
@@ -1545,17 +1558,21 @@ $('handout-form').addEventListener('submit', async e => {
 });
 
 /* ---------- autosave ---------- */
-let dirty = false, saveTimer = null, saving = Promise.resolve(), lastTouch = 0;
+let dirty = false, saveTimer = null, lastTouch = 0;
 function setSave(text, err) { const el = $('save'); el.textContent = text; el.classList.toggle('err', !!err); }
 function markDirty() { dirty = true; setSave('저장 중…'); clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 2500); }
+// Saving never makes the screen wait. Firestore keeps every write on the tablet at once (and in order),
+// then sends it when the network allows; waiting for the server's answer before turning a page
+// froze page turns whenever the Wi-Fi was slow, and one stuck answer held up every later turn.
+let pendingSaves = 0, slowSaveTimer = null, lastAck = Promise.resolve(), saveSeq = 0;
+const latestSave = new Map();
 function flushSave() {
   clearTimeout(saveTimer); saveTimer = null;
-  if (!dirty || !nb || !pages[pi]) return saving;
+  if (!dirty || !nb || !pages[pi]) return Promise.resolve();
   dirty = false;
   // never write a page into a notebook it does not belong to
-  if (pages[pi]._nb && pages[pi]._nb !== nb.id) return saving;
+  if (pages[pi]._nb && pages[pi]._nb !== nb.id) return Promise.resolve();
   const pg = pages[pi], book = nb, enc = strokes.map(encodeCached), refs = R, who = mode;
-  const r = sheet.getBoundingClientRect();
   let job;
   if (who === 'teacher') {
     const body = { strokes: enc, seal, updated: Date.now() };
@@ -1564,34 +1581,47 @@ function flushSave() {
     const ink = inkCount(strokes), base = fbBase && fbBase.pg === pg ? fbBase : { ink: 0, seal: '' };
     const added = ink > base.ink || (seal && seal !== base.seal);
     fbBase = { pg, ink, seal };
-    job = async () => { await refs.fb(book.id, pg.id).set(body); if (added) notifyStudent(st, refs, 'fb', book, pg); return sizeOf(enc); };
+    job = () => refs.fb(book.id, pg.id).set(body).then(() => { if (added) notifyStudent(st, refs, 'fb', book, pg); });
   } else {
     const body = { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H, bg: pg.bg || 0, bgSrc: pg.bg ? (pg.bgSrc || '') : '' };
     book.updated = today(); book.pages = pages.length;
-    job = async () => {
-      await store.putPage(book.id, body);
-      const now = Date.now();
-      if (book._savedPages !== pages.length || now - (book._savedAt || 0) > 10 * 60 * 1000) {
-        await store.touchNotebook(book); book._savedPages = pages.length; book._savedAt = now;
-      }
-      if (now - lastTouch > 20000) { lastTouch = now; touchStudent({ current: { nb: book.id, nbName: book.name, pg: pg.id, n: pg.n }, updated: now }); }
-      return sizeOf(enc);
-    };
+    // every write is started right now (not one after another's answer)
+    const writes = [store.putPage(book.id, body)];
+    const now = Date.now();
+    if (book._savedPages !== pages.length || now - (book._savedAt || 0) > 10 * 60 * 1000) {
+      book._savedPages = pages.length; book._savedAt = now;
+      writes.push(store.touchNotebook(book).catch(e => { book._savedPages = -1; throw e; }));
+    }
+    if (now - lastTouch > 20000) { lastTouch = now; touchStudent({ current: { nb: book.id, nbName: book.name, pg: pg.id, n: pg.n }, updated: now }); }
+    const all = Promise.all(writes);
+    job = () => all;
   }
-  // one write at a time: chain after the previous save
-  saving = saving.then(async () => {
-    try {
-      const bytes = await job();
-      if (bytes > PAGE_LIMIT * 0.85) setSave('이 페이지가 거의 찼어요. 새 페이지에 이어 써 주세요', true);
-      else setSave(who === 'teacher' ? '피드백 저장됨' : '저장됨');
-    } catch (e) {
-      dirty = true;
-      setSave('저장하지 못했어요. 잠시 뒤 다시 시도해요', true);
-      clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 4000);
+  const key = book.id + '/' + pg.id, seq = ++saveSeq;
+  latestSave.set(key, seq);
+  let p; try { p = job(); } catch (e) { p = Promise.reject(e); }
+  pendingSaves++;
+  clearTimeout(slowSaveTimer);
+  slowSaveTimer = setTimeout(() => { if (pendingSaves > 0) setSave('태블릿에 저장됨 · 인터넷이 되면 보내요'); }, 4000);
+  const bytes = sizeOf(enc);
+  const done = p.then(() => {
+    pendingSaves--;
+    if (pendingSaves > 0 || dirty) return;
+    clearTimeout(slowSaveTimer);
+    if (bytes > PAGE_LIMIT * 0.85) setSave('이 페이지가 거의 찼어요. 새 페이지에 이어 써 주세요', true);
+    else setSave(who === 'teacher' ? '피드백 저장됨' : '저장됨');
+  }, e => {
+    pendingSaves--;
+    setSave('저장하지 못했어요. 잠시 뒤 다시 시도해요', true);
+    // try again only if this was the newest save of a page that is still open
+    if (latestSave.get(key) === seq && nb === book && pages[pi] === pg) {
+      dirty = true; clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 4000);
     }
   });
-  return saving;
+  lastAck = Promise.all([lastAck, done]).catch(() => {});
+  return Promise.resolve();
 }
+// before signing out, give unsent writes a few seconds to reach the server
+function waitForSaves(ms) { return Promise.race([lastAck, new Promise(r => setTimeout(r, ms))]); }
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') flushSave();
   else repaintAll();
