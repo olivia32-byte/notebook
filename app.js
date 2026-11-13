@@ -714,7 +714,10 @@ function notifyStudent(st, refs, kind, book, pg, text) {
   list.push({ at: now, kind, nb: book.id, nbName: book.name || '', pg: pg.id, n: pg.n || 0, text: (text || '').slice(0, 60) });
   const notices = list.slice(-NOTICE_KEEP);
   live.notices = notices; st.notices = notices;
-  refs.student.update({ notices }).catch(() => {});
+  // say so on the teacher's screen, so it is clear the notice went (or why it did not)
+  refs.student.update({ notices })
+    .then(() => toast(`${st.num ? st.num + '번 ' : ''}학생에게 알림을 보냈어요`))
+    .catch(err => toast('학생에게 알림을 보내지 못했어요. ' + errText(err)));
 }
 let noticeUnsub = null, noticeSeen = {}, noticeKey = '', noticeList = [], noticeShown = null;
 function startNotices() {
@@ -742,12 +745,8 @@ function markNoticeSeen(nbId, pgId) {
 }
 function checkNotices() {
   if (mode !== 'student' || ownBook) return;
-  // the page on screen: its feedback and messages already show there
-  const onBook = !$('book').hidden && nb && pages[pi];
-  if (onBook) {
-    const here = noticeList.filter(x => x.nb === nb.id && x.pg === pages[pi].id && isUnseen(x) && (x.kind === 'fb' || !$('chat').hidden));
-    if (here.length) markNoticeSeen(nb.id, pages[pi].id);
-  }
+  // a notice for the page already on screen still shows: the student may not notice a stamp or a
+  // message appearing; it is checked off with 확인 (or by opening the page again later)
   if (!$('shelf').hidden) renderShelf();
   const fresh = noticeList.filter(x => isUnseen(x) && !noticeDismissed.has(noticeId(x) + '@' + x.at)).sort((a, b) => b.at - a.at);
   if (!fresh.length) { hideNotice(); return; }
@@ -762,6 +761,8 @@ function showNotice(x, count) {
     ? `선생님이 ${where}에 메시지를 보냈어요${x.text ? ': "' + x.text + '"' : ''}`
     : `선생님이 ${where}에 피드백을 남겼어요`;
   $('notice-more').textContent = count > 1 ? `새 소식 ${count}개` : '';
+  const here = !$('book').hidden && nb && pages[pi] && nb.id === x.nb && pages[pi].id === x.pg;
+  $('notice-go').textContent = here ? (x.kind === 'chat' ? '대화 보기' : '확인') : '보러 가기';
   $('notice').hidden = false;
   try { if (navigator.vibrate) navigator.vibrate([120, 80, 120]); } catch (e) {}
 }
