@@ -694,14 +694,23 @@ function clearPageSubs() { pageSubs.forEach(u => u()); pageSubs = []; }
 /* ---------- notices: the teacher's feedback and messages reach the student anywhere in the app ---------- */
 // The teacher writes a short list of recent notices on the student's own record (which the student can read).
 // The student's app watches that record and shows a banner with a 보러 가기 button, a sound and a vibration.
-const NOTICE_KEEP = 20, NOTICE_GAP = 3 * 60 * 1000;
+const NOTICE_KEEP = 30, NOTICE_GAP = 90 * 1000;
 function notifyStudent(st, refs, kind, book, pg, text) {
   if (!st || !refs || !refs.student || ownBook || !book || !pg) return;
   const live = (typeof students !== 'undefined' && students.find(x => x.id === st.id)) || st;
   const list = Array.isArray(live.notices) ? live.notices.slice() : [];
   const now = Date.now();
-  // feedback is saved every few seconds while the teacher writes: one notice per page is enough
-  if (kind === 'fb' && list.some(x => x.kind === 'fb' && x.pg === pg.id && now - x.at < NOTICE_GAP)) return;
+  // feedback is saved every few seconds while the teacher writes: one notice per sitting on a page.
+  // A sitting ends after 90 seconds without saving; feedback after that is a new notice of its own.
+  const prev = kind === 'fb' && list.slice().reverse().find(x => x.kind === 'fb' && x.pg === pg.id);
+  if (prev && now - (prev.last || prev.at) < NOTICE_GAP) {
+    if (now - (prev.last || prev.at) < 30000) return;
+    prev.last = now;
+    const notices = list.slice(-NOTICE_KEEP);
+    live.notices = notices; st.notices = notices;
+    refs.student.update({ notices }).catch(() => {});
+    return;
+  }
   list.push({ at: now, kind, nb: book.id, nbName: book.name || '', pg: pg.id, n: pg.n || 0, text: (text || '').slice(0, 60) });
   const notices = list.slice(-NOTICE_KEEP);
   live.notices = notices; st.notices = notices;
@@ -778,27 +787,21 @@ $('notice-go').addEventListener('click', () => goToNotice(noticeShown));
 // 확인 안 한 알림 on the bookshelf: one row per page (feedback and messages on the same page together)
 function renderInbox() {
   const box = $('inbox-list'); box.textContent = '';
-  const groups = new Map();
-  for (const x of noticeList.filter(isUnseen).sort((a, b) => b.at - a.at)) {
-    const k = x.nb + '/' + x.pg;
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(x);
-  }
-  $('inbox').hidden = ownBook || mode !== 'student' || !groups.size;
-  $('inbox-count').textContent = groups.size;
-  for (const list of groups.values()) {
-    const x = list[0], hasFb = list.some(y => y.kind === 'fb'), msg = list.find(y => y.kind === 'chat');
+  // one row per notice, newest first; opening the page clears every notice of that page
+  const list = noticeList.filter(isUnseen).sort((a, b) => b.at - a.at);
+  $('inbox').hidden = ownBook || mode !== 'student' || !list.length;
+  $('inbox-count').textContent = list.length;
+  for (const x of list) {
     const row = document.createElement('button'); row.className = 'inbox-row';
-    const ico = document.createElement('span'); ico.className = 'ico' + (hasFb ? '' : ' chat'); ico.textContent = hasFb ? '✎' : '💬';
+    const ico = document.createElement('span'); ico.className = 'ico' + (x.kind === 'chat' ? ' chat' : ''); ico.textContent = x.kind === 'chat' ? '💬' : '✎';
     const what = document.createElement('span'); what.className = 'what';
     const t = document.createElement('b'); t.textContent = `${x.nbName || '공책'} ${x.n ? x.n + '쪽' : ''}`.trim();
     const d = document.createElement('span');
-    const kinds = [hasFb ? '선생님 피드백' : '', msg ? `메시지 "${msg.text}"` : ''].filter(Boolean).join(' · ');
-    d.textContent = `${kinds} · ${ago(x.at)}`;
+    d.textContent = `${x.kind === 'chat' ? `메시지 "${x.text}"` : '선생님 피드백'} · ${ago(x.at)}`;
     what.append(t, d);
     const go = document.createElement('span'); go.className = 'go'; go.textContent = '보러 가기 →';
     row.append(ico, what, go);
-    row.addEventListener('click', () => goToNotice(msg && !hasFb ? msg : (msg || x)));
+    row.addEventListener('click', () => goToNotice(x));
     box.append(row);
   }
 }
