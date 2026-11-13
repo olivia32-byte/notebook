@@ -179,6 +179,12 @@ footer.pages { padding-block: 0 10px; display: flex; flex-wrap: wrap; align-item
 .badge { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 12px; line-height: 20px; text-align: center; margin-left: 4px; }
 button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 
+#notice { position: fixed; top: calc(10px + env(safe-area-inset-top, 0px)); left: 50%; transform: translateX(-50%); z-index: 30; width: min(640px, calc(100% - 24px));
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 14px; border-radius: 14px; background: #fff4d6; color: #3a2a00; border: 2px solid #f0b400; box-shadow: 0 8px 28px rgba(0,0,0,.25); animation: notice-in .35s ease-out; }
+#notice .notice-body { flex: 1 1 220px; display: grid; gap: 2px; font-size: 16px; }
+#notice .small { color: #6b5600; }
+@keyframes notice-in { from { transform: translate(-50%, -30px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
+.news-tag { position: absolute; top: 8px; right: 8px; background: var(--danger); color: #fff; border-radius: 999px; padding: 3px 9px; font-size: 12px; font-weight: 700; box-shadow: 0 0 0 2px #fff; }
 #toast {
   position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
   background: var(--fg); color: var(--bg); padding: 10px 18px; border-radius: 999px; font-size: 14px; z-index: 20; max-width: calc(100% - 32px);
@@ -255,6 +261,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 <section id="shelf" class="scroll" hidden>
   <div class="topbar gutter">
     <div class="grow"><h1 id="shelf-title">내 공책장</h1><p id="shelf-sub">과목마다 공책을 따로 만들어 차곡차곡 모아요</p></div>
+    <button id="notice-sound" aria-pressed="true">알림 소리 켬</button>
     <button id="shelf-home" hidden>← 내 반 목록</button>
     <button class="logout">로그아웃</button>
   </div>
@@ -464,9 +471,14 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
   </footer>
 </section>
 
+<div id="notice" role="alert" hidden>
+  <div class="notice-body"><b id="notice-text"></b><span class="small" id="notice-more"></span></div>
+  <button id="notice-go" class="primary">보러 가기</button>
+  <button id="notice-close" aria-label="알림 닫기">닫기</button>
+</div>
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=21"></script>
-<script type="module" src="app.js?v=21"></script>
+<script src="config.js?v=22"></script>
+<script type="module" src="app.js?v=22"></script>
 </body>
 </html>

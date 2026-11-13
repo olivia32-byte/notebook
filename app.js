@@ -149,7 +149,7 @@ $('t-login').addEventListener('click', async () => {
   try { await backend.teacherLogin(); } catch (err) { $('t-err').textContent = errText(err); }
 });
 document.querySelectorAll('.logout').forEach(b => b.addEventListener('click', async () => {
-  await flushSave(); stopClass(); clearPageSubs(); await backend.logout();
+  await flushSave(); stopClass(); stopNotices(); clearPageSubs(); await backend.logout();
 }));
 
 /* ================= student: bookshelf ================= */
@@ -172,10 +172,11 @@ function ownRefs(uid) {
 function setShelfChrome() {
   document.querySelectorAll('#shelf .logout').forEach(b => { b.hidden = ownBook; });
   $('shelf-home').hidden = !ownBook;
+  $('notice-sound').hidden = ownBook;
   $('chat-open').hidden = ownBook;
 }
 async function enterOwnShelf() {
-  stopClass();
+  stopClass(); stopNotices();
   mode = 'student'; ownBook = true; studentInfo = null;
   R = ownRefs(me.uid);
   setShelfChrome();
@@ -199,6 +200,7 @@ async function enterStudent(code, num) {
   touchStudent({ updated: Date.now() });
   try { notebooks = await store.listNotebooks(); } catch (e) { notebooks = []; $('store-note').textContent = '공책을 불러오지 못했어요. ' + errText(e); }
   renderShelf();
+  startNotices();
 }
 let deleting = false;
 $('del-mode').addEventListener('click', () => {
@@ -232,6 +234,11 @@ function renderShelf() {
     const meta = document.createElement('div'); meta.className = 'meta';
     meta.textContent = `${n.pages || 1}쪽 · ${fmtDate(n.updated || n.created)}`;
     b.append(lab, meta);
+    const news = !ownBook && noticeList.filter(x => x.nb === n.id && isUnseen(x));
+    if (news && news.length) {
+      const dot = document.createElement('div'); dot.className = 'news-tag';
+      dot.textContent = news.some(x => x.kind === 'chat') ? '새 메시지' : '새 피드백'; b.append(dot);
+    }
     if (deleting) {
       b.classList.add('deleting');
       const tag = document.createElement('div'); tag.className = 'del-tag'; tag.textContent = '눌러서 지우기';
@@ -269,7 +276,7 @@ $('new-form').addEventListener('submit', async e => {
 
 /* ================= teacher: classes ================= */
 async function enterTeacherHome() {
-  mode = 'teacher'; stopClass(); ownBook = false; setShelfChrome();
+  mode = 'teacher'; stopClass(); stopNotices(); ownBook = false; setShelfChrome();
   show('classes');
   $('teacher-who').textContent = `${me.name || me.email} 선생님`;
   let list = [];
@@ -684,6 +691,106 @@ let scale = 1, view = 1; // view = page unit → canvas pixel
 
 function clearPageSubs() { pageSubs.forEach(u => u()); pageSubs = []; }
 
+/* ---------- notices: the teacher's feedback and messages reach the student anywhere in the app ---------- */
+// The teacher writes a short list of recent notices on the student's own record (which the student can read).
+// The student's app watches that record and shows a banner with a 보러 가기 button, a sound and a vibration.
+const NOTICE_KEEP = 20, NOTICE_GAP = 3 * 60 * 1000;
+function notifyStudent(st, refs, kind, book, pg, text) {
+  if (!st || !refs || !refs.student || ownBook || !book || !pg) return;
+  const live = (typeof students !== 'undefined' && students.find(x => x.id === st.id)) || st;
+  const list = Array.isArray(live.notices) ? live.notices.slice() : [];
+  const now = Date.now();
+  // feedback is saved every few seconds while the teacher writes: one notice per page is enough
+  if (kind === 'fb' && list.some(x => x.kind === 'fb' && x.pg === pg.id && now - x.at < NOTICE_GAP)) return;
+  list.push({ at: now, kind, nb: book.id, nbName: book.name || '', pg: pg.id, n: pg.n || 0, text: (text || '').slice(0, 60) });
+  const notices = list.slice(-NOTICE_KEEP);
+  live.notices = notices; st.notices = notices;
+  refs.student.update({ notices }).catch(() => {});
+}
+let noticeUnsub = null, noticeSeen = {}, noticeKey = '', noticeList = [], noticeShown = null;
+let noticeSound = lsGet('dn-notice-sound') !== false;
+function startNotices() {
+  stopNotices();
+  if (!R || !R.student || ownBook) return;
+  noticeKey = `dn-notice-${classId}-${R.student.id}`;
+  noticeSeen = lsGet(noticeKey) || {};
+  noticeUnsub = R.student.onSnapshot(d => {
+    if (!d.exists) return;
+    noticeList = Array.isArray(d.data().notices) ? d.data().notices : [];
+    checkNotices();
+  }, () => {});
+}
+function stopNotices() { if (noticeUnsub) noticeUnsub(); noticeUnsub = null; noticeList = []; hideNotice(); }
+const noticeId = x => x.nb + '/' + x.pg + '/' + x.kind;
+function isUnseen(x) { return x.at > (noticeSeen[noticeId(x)] || 0); }
+function markNoticeSeen(nbId, pgId) {
+  let changed = false;
+  for (const x of noticeList) if (x.nb === nbId && (!pgId || x.pg === pgId) && isUnseen(x)) { noticeSeen[noticeId(x)] = x.at; changed = true; }
+  if (!changed) return;
+  const keys = Object.keys(noticeSeen); if (keys.length > 200) keys.sort((a, b) => noticeSeen[a] - noticeSeen[b]).slice(0, keys.length - 200).forEach(k => delete noticeSeen[k]);
+  lsPut(noticeKey, noticeSeen);
+  if (noticeShown && !isUnseen(noticeShown)) hideNotice();
+  if (!$('shelf').hidden) renderShelf();
+}
+function checkNotices() {
+  if (mode !== 'student' || ownBook) return;
+  // the page on screen: its feedback and messages already show there
+  const onBook = !$('book').hidden && nb && pages[pi];
+  if (onBook) {
+    const here = noticeList.filter(x => x.nb === nb.id && x.pg === pages[pi].id && isUnseen(x) && (x.kind === 'fb' || !$('chat').hidden));
+    if (here.length) markNoticeSeen(nb.id, pages[pi].id);
+  }
+  const fresh = noticeList.filter(isUnseen).sort((a, b) => b.at - a.at);
+  if (!$('shelf').hidden) renderShelf();
+  if (!fresh.length) { hideNotice(); return; }
+  const top = fresh[0];
+  if (noticeShown && noticeShown.at === top.at) return;
+  showNotice(top, fresh.length);
+}
+function showNotice(x, count) {
+  noticeShown = x;
+  const where = `${x.nbName || '공책'} ${x.n ? x.n + '쪽' : ''}`.trim();
+  $('notice-text').textContent = x.kind === 'chat'
+    ? `선생님이 ${where}에 메시지를 보냈어요${x.text ? ': "' + x.text + '"' : ''}`
+    : `선생님이 ${where}에 피드백을 남겼어요`;
+  $('notice-more').textContent = count > 1 ? `새 소식 ${count}개` : '';
+  $('notice').hidden = false;
+  if (noticeSound) beep();
+  try { if (navigator.vibrate) navigator.vibrate([120, 80, 120]); } catch (e) {}
+}
+function hideNotice() { noticeShown = null; const el = $('notice'); if (el) el.hidden = true; }
+let audioCtx = null;
+document.addEventListener('pointerdown', () => { try { if (!audioCtx && window.AudioContext) audioCtx = new AudioContext(); if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); } catch (e) {} }, { capture: true, passive: true });
+function beep() {
+  try {
+    if (!audioCtx) return;
+    const t = audioCtx.currentTime;
+    for (const [f, d] of [[880, 0], [1320, 0.16]]) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = f; o.type = 'sine';
+      g.gain.setValueAtTime(0.0001, t + d); g.gain.exponentialRampToValueAtTime(0.25, t + d + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.22);
+      o.connect(g).connect(audioCtx.destination); o.start(t + d); o.stop(t + d + 0.25);
+    }
+  } catch (e) {}
+}
+$('notice-close').addEventListener('click', () => { const x = noticeShown; if (x) { noticeSeen[noticeId(x)] = x.at; lsPut(noticeKey, noticeSeen); } hideNotice(); checkNotices(); });
+$('notice-go').addEventListener('click', async () => {
+  const x = noticeShown; if (!x) return;
+  hideNotice();
+  let n = notebooks.find(b => b.id === x.nb);
+  if (!n) { try { notebooks = await store.listNotebooks(); } catch (e) {} n = notebooks.find(b => b.id === x.nb); }
+  if (!n) { toast('그 공책을 찾지 못했어요'); return; }
+  if (!(nb && nb.id === n.id && !$('book').hidden)) await openStudentNotebook(n);
+  const i = pages.findIndex(p => p.id === x.pg);
+  if (i >= 0 && i !== pi) { await flushSave(); showPage(i); }
+  if (x.kind === 'chat') { $('chat').hidden = false; markChatRead(); renderChat(); }
+  markNoticeSeen(x.nb, x.pg);
+  checkNotices();
+});
+function setSoundBtn() { const b = $('notice-sound'); b.textContent = noticeSound ? '알림 소리 켬' : '알림 소리 끔'; b.setAttribute('aria-pressed', String(noticeSound)); }
+$('notice-sound').addEventListener('click', () => { noticeSound = !noticeSound; lsPut('dn-notice-sound', noticeSound); setSoundBtn(); if (noticeSound) beep(); });
+setSoundBtn();
+
 async function openStudentNotebook(n) {
   await flushSave();
   mode = 'student'; nb = n;
@@ -819,6 +926,7 @@ function showPage(i) {
     strokes = pg._dec; ready = true;
     hint.hidden = strokes.length > 0 || !!pg.bg;
     touchStudent({ current: { nb: nb.id, nbName: nb.name, pg: pg.id, n: pg.n }, updated: Date.now() });
+    if (!ownBook) { markNoticeSeen(nb.id, pg.id); setTimeout(checkNotices, 0); }
     let first = true, lastUpdated = null;
     pageSubs.push(R.fb(nb.id, pg.id).onSnapshot(d => {
       const data = d.exists ? d.data() : {};
@@ -1103,7 +1211,7 @@ function msgEditForm(m, draft) {
   });
   return f;
 }
-$('chat-open').addEventListener('click', () => { $('chat').hidden = !$('chat').hidden; markChatRead(); renderChat(); if (!$('chat').hidden) $('chat-input').focus(); });
+$('chat-open').addEventListener('click', () => { $('chat').hidden = !$('chat').hidden; markChatRead(); renderChat(); if (mode === 'student' && nb && pages[pi]) markNoticeSeen(nb.id, pages[pi].id); if (!$('chat').hidden) $('chat-input').focus(); });
 $('chat-close').addEventListener('click', () => { $('chat').hidden = true; });
 // on-screen keyboard: while typing, the chat box moves to the top of the screen with the typing line
 // first, so the keyboard (which rises from the bottom) never covers it, in a browser tab or full screen
@@ -1117,6 +1225,7 @@ $('chat-form').addEventListener('submit', async e => {
   const at = Date.now();
   try {
     await R.chat(nb.id, pages[pi].id).add({ from: mode === 'teacher' ? 't' : 's', text, at });
+    if (mode === 'teacher') notifyStudent(tStudent, R, 'chat', nb, pages[pi], text);
     if (mode === 'student') {
       touchStudent({ lastMsgAt: at, updated: at });
       // a message on a brand-new blank page: save the page too, or the teacher can't open it to read the message
@@ -1339,7 +1448,8 @@ function flushSave() {
   let job;
   if (who === 'teacher') {
     const body = { strokes: enc, seal, updated: Date.now() };
-    job = async () => { await refs.fb(book.id, pg.id).set(body); return sizeOf(enc); };
+    const st = tStudent;
+    job = async () => { await refs.fb(book.id, pg.id).set(body); notifyStudent(st, refs, 'fb', book, pg); return sizeOf(enc); };
   } else {
     const body = { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H, bg: pg.bg || 0, bgSrc: pg.bg ? (pg.bgSrc || '') : '' };
     book.updated = today(); book.pages = pages.length;
