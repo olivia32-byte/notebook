@@ -802,10 +802,7 @@ function renderInbox() {
     box.append(row);
   }
 }
-$('inbox-all').addEventListener('click', () => {
-  for (const x of noticeList) if (isUnseen(x)) noticeSeen[noticeId(x)] = x.at;
-  lsPut(noticeKey, noticeSeen); hideNotice(); renderShelf();
-});
+
 
 async function openStudentNotebook(n) {
   await flushSave();
