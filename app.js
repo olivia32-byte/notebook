@@ -1879,10 +1879,11 @@ function paintPaper() {
   paperKey = key; paperC.width = W; paperC.height = H;
   const g = pctx;
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.fillStyle = cssVar('--paper'); g.fillRect(0, 0, W, H);
+  const PW = PAGE_W * view, PH = PAGE_H * view;
+  if (zoom < 1) { g.fillStyle = '#c9d2d9'; g.fillRect(0, 0, W, H); g.fillStyle = cssVar('--paper'); g.fillRect(Math.round(vx()), Math.round(vy()), Math.round(PW), Math.round(PH)); }
+  else { g.fillStyle = cssVar('--paper'); g.fillRect(0, 0, W, H); }
   // page coordinates from here on (zoom and pan applied)
   g.setTransform(1, 0, 0, 1, vx(), vy());
-  const PW = PAGE_W * view, PH = PAGE_H * view;
   g.fillStyle = cssVar('--rule');
   const step = 48 * view, t = Math.max(1, Math.round(dpr));
   const hasBg = bg && bg.stamp === bgPg.bg;
@@ -1917,6 +1918,19 @@ function redraw() {
   fctx.globalCompositeOperation = 'source-over';
   ctx.globalCompositeOperation = 'source-over';
   ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(frame, 0, 0); ctx.restore();
+  if (!current) present();
+}
+// The writing canvas draws straight to the screen (low delay). On some Galaxy Tabs a picture drawn there
+// outside of pen input (a new page, a worksheet that just finished loading) is not put on screen until
+// something else makes the screen redraw, such as pulling up the navigation bar. A tiny one-frame
+// change of opacity makes the tablet show it at once.
+let presentQueued = false;
+function present() {
+  if (presentQueued) return; presentQueued = true;
+  requestAnimationFrame(() => {
+    ink.style.opacity = '0.999';
+    requestAnimationFrame(() => { ink.style.opacity = ''; presentQueued = false; });
+  });
 }
 /* ---------- zoom: two fingers zoom and move the page, the S Pen keeps writing ---------- */
 // The canvases stay the size of the sheet on screen; zoom and pan only change how page units map onto them,
@@ -1924,11 +1938,15 @@ function redraw() {
 // and the page is drawn properly again when the fingers lift.
 let zoom = 1, panX = 0, panY = 0, boxW = 0, boxH = 0;
 const ZOOM_MAX = 4;
+// zooming out stops when the whole page is on screen (turned sideways that is smaller than 100%)
+const zoomMin = () => Math.min(1, sheetH() / (PAGE_H * scale), sheetW() / (PAGE_W * scale));
+const clampZ = z => Math.min(ZOOM_MAX, Math.max(zoomMin(), z));
 const vx = () => panX * dpr, vy = () => panY * dpr;
 function sheetW() { return boxW || PAGE_W * scale; }
 function sheetH() { return boxH || PAGE_H * scale; }
-const clampX = (x, z) => Math.min(0, Math.max(sheetW() - PAGE_W * scale * z, x));
-const clampY = (y, z) => Math.min(0, Math.max(sheetH() - PAGE_H * scale * z, y));
+// a page smaller than the screen (zoomed out) sits in the middle; a bigger one can move but never leaves a gap
+const clampX = (x, z) => { const d = sheetW() - PAGE_W * scale * z; return d >= 0 ? d / 2 : Math.min(0, Math.max(d, x)); };
+const clampY = (y, z) => { const d = sheetH() - PAGE_H * scale * z; return d >= 0 ? d / 2 : Math.min(0, Math.max(d, y)); };
 const canPan = z => PAGE_W * scale * z > sheetW() + 1 || PAGE_H * scale * z > sheetH() + 1;
 function clampPan() { panX = clampX(panX, zoom); panY = clampY(panY, zoom); }
 function applyView() {
@@ -1940,13 +1958,13 @@ function applyView() {
   updateVbar();
 }
 function setView(z, px, py) {
-  zoom = Math.min(ZOOM_MAX, Math.max(1, z)); panX = px; panY = py; clampPan();
+  zoom = clampZ(z); panX = px; panY = py; clampPan();
   ink.style.transform = ''; live.style.visibility = '';
   applyView(); resetLayers(); redraw();
 }
 // zoom about a point on the sheet (sheet CSS px), keeping that point still
 function zoomAt(z, sx, sy) {
-  const nz = Math.min(ZOOM_MAX, Math.max(1, z));
+  const nz = clampZ(z);
   const px = sx - (sx - panX) * nz / zoom, py = sy - (sy - panY) * nz / zoom;
   setView(nz, px, py);
 }
@@ -1969,7 +1987,7 @@ function gestureMove() {
   if (!g || !ps.length) return;
   const c = ps.length > 1 ? { x: (ps[0].x + ps[1].x) / 2, y: (ps[0].y + ps[1].y) / 2 } : ps[0];
   let z = g.z0;
-  if (g.n > 1 && ps.length > 1 && g.d0 > 10) z = Math.min(ZOOM_MAX, Math.max(1, g.z0 * Math.hypot(ps[0].x - ps[1].x, ps[0].y - ps[1].y) / g.d0));
+  if (g.n > 1 && ps.length > 1 && g.d0 > 10) z = clampZ(g.z0 * Math.hypot(ps[0].x - ps[1].x, ps[0].y - ps[1].y) / g.d0);
   if (g.n === 1 && !canPan(z)) return; // one finger on a page that fits: nothing to move
   // the page point under the starting centre follows the fingers' centre
   let px = c.x - (g.c0.x - g.px0) * z / g.z0, py = c.y - (g.c0.y - g.py0) * z / g.z0;
@@ -2103,6 +2121,7 @@ sheet.addEventListener('pointerdown', e => {
   if (current && e.pointerId !== activeId && ((e.pointerType === 'pen' && current.type === 'pen') || Date.now() - lastMoveAt > 1500)) finishStroke();
   if (current && e.pointerId === activeId && e.pointerType === 'pen') finishStroke();
   if (!allowed(e) || current) return;
+  if (zoom < 1) { const q = pt(e); if (q.x < 0 || q.y < 0 || q.x > PAGE_W || q.y > PAGE_H) return; }
   e.preventDefault();
   try { sheet.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
   lastMoveAt = Date.now();
