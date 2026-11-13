@@ -661,6 +661,12 @@ const sheet = $('sheet'), ink = $('ink'), live = $('live');
 // paints the paper itself; finished strokes live on hidden layers and are composited on redraw.
 const ctx = ink.getContext('2d', { desynchronized: true, alpha: false });
 const lctx = live.getContext('2d');
+// An ordinary canvas under the writing canvas. With the navigation bar hidden, Galaxy Tabs put the
+// low-latency canvas on a fast screen path that is only refreshed while the pen moves, so a new page or a
+// worksheet that finished loading stayed invisible. Every finished picture is also put here, and the
+// writing canvas is hidden until the pen next touches the screen.
+const shown = document.createElement('canvas'); shown.id = 'shown'; ink.before(shown);
+const sctx = shown.getContext('2d', { alpha: false });
 const offBase = document.createElement('canvas'), bctx = offBase.getContext('2d');
 const offEdit = document.createElement('canvas'), ectx = offEdit.getContext('2d');
 const cssCache = {};
@@ -1809,7 +1815,7 @@ function resize() {
   const W = Math.round(boxW * dpr), H = Math.round(boxH * dpr);
   // the browser bar or keyboard can fire resize without changing the page: keep the canvases then
   if (W === ink.width && H === ink.height) { applyView(); redraw(); return; }
-  for (const c of [ink, live, offBase, offEdit, frame]) { c.width = W; c.height = H; }
+  for (const c of [ink, shown, live, offBase, offEdit, frame]) { c.width = W; c.height = H; }
   applyView();
   resetLayers();
   redraw();
@@ -1918,20 +1924,11 @@ function redraw() {
   fctx.globalCompositeOperation = 'source-over';
   ctx.globalCompositeOperation = 'source-over';
   ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(frame, 0, 0); ctx.restore();
-  if (!current) present();
+  if (!current) { sctx.drawImage(frame, 0, 0); ink.style.visibility = 'hidden'; }
 }
-// The writing canvas draws straight to the screen (low delay). On some Galaxy Tabs a picture drawn there
-// outside of pen input (a new page, a worksheet that just finished loading) is not put on screen until
-// something else makes the screen redraw, such as pulling up the navigation bar. A tiny one-frame
-// change of opacity makes the tablet show it at once.
-let presentQueued = false;
-function present() {
-  if (presentQueued) return; presentQueued = true;
-  requestAnimationFrame(() => {
-    ink.style.opacity = '0.999';
-    requestAnimationFrame(() => { ink.style.opacity = ''; presentQueued = false; });
-  });
-}
+// the pen is down: show the writing canvas again (it already holds the same picture)
+function inkUp() { if (ink.style.visibility) ink.style.visibility = ''; }
+
 /* ---------- zoom: two fingers zoom and move the page, the S Pen keeps writing ---------- */
 // The canvases stay the size of the sheet on screen; zoom and pan only change how page units map onto them,
 // so zooming in costs no extra memory. During a gesture the last picture is stretched with CSS (fast),
@@ -1959,7 +1956,7 @@ function applyView() {
 }
 function setView(z, px, py) {
   zoom = clampZ(z); panX = px; panY = py; clampPan();
-  ink.style.transform = ''; live.style.visibility = '';
+  ink.style.transform = shown.style.transform = ''; live.style.visibility = '';
   applyView(); resetLayers(); redraw();
 }
 // zoom about a point on the sheet (sheet CSS px), keeping that point still
@@ -1995,8 +1992,8 @@ function gestureMove() {
   g.z = z; g.px = px; g.py = py; g.moved = true;
   // quick preview: stretch the picture already on screen
   const r = z / zoom;
-  ink.style.transformOrigin = '0 0';
-  ink.style.transform = `translate(${px - r * panX}px, ${py - r * panY}px) scale(${r})`;
+  ink.style.transformOrigin = shown.style.transformOrigin = '0 0';
+  ink.style.transform = shown.style.transform = `translate(${px - r * panX}px, ${py - r * panY}px) scale(${r})`;
   live.style.visibility = 'hidden';
   const o = $('over'); if (o) o.style.transform = `translate(${px}px, ${py}px) scale(${z})`;
 }
@@ -2123,6 +2120,7 @@ sheet.addEventListener('pointerdown', e => {
   if (!allowed(e) || current) return;
   if (zoom < 1) { const q = pt(e); if (q.x < 0 || q.y < 0 || q.x > PAGE_W || q.y > PAGE_H) return; }
   e.preventDefault();
+  inkUp();
   try { sheet.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
   lastMoveAt = Date.now();
   const erase = tool === 'eraser' || (e.pointerType === 'pen' && (e.buttons & 2 || e.buttons & 32));
