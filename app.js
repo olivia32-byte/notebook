@@ -834,16 +834,22 @@ function renderInbox() {
 $('inbox-more').addEventListener('click', () => { inboxMore = !inboxMore; renderInbox(); });
 
 
+let openSeq = 0;
 async function openStudentNotebook(n) {
   await flushSave();
+  const seq = ++openSeq;
   mode = 'student'; nb = n;
+  // nothing of the previous notebook may stay on screen (or be written into this one) while loading
+  blankEditor('불러오는 중…');
   setEditorChrome();
   show('book');
   $('book-name').textContent = n.name;
   setSave('불러오는 중…');
   let list = [];
   try { list = await store.listPages(n.id); } catch (e) { setSave('불러오지 못했어요', true); }
+  if (seq !== openSeq || nb !== n) return;
   if (!list.length) list = [{ id: newId(), n: 1, paper: n.paper || 'lined', created: n.created, strokes: [] }];
+  for (const p of list) p._nb = n.id;
   pages = list;
   resize();
   showPage(pages.length - 1);
@@ -872,13 +878,23 @@ async function openTeacherNotebook(st, target) {
 }
 async function loadTeacherNotebook(n, pgId) {
   await flushSave(); $('t-rename-box').hidden = true; resetTDel();
-  nb = n;
-  try { pages = (await R.pages(n.id).orderBy('n').get()).docs.map(d => ({ ...d.data(), id: d.id })); } catch (e) { pages = []; }
+  const seq = ++openSeq;
+  nb = n; blankEditor('불러오는 중…');
+  let list = [];
+  try { list = (await R.pages(n.id).orderBy('n').get()).docs.map(d => ({ ...d.data(), id: d.id, _nb: n.id })); } catch (e) { list = []; }
+  if (seq !== openSeq || nb !== n) return;
+  pages = list;
   resize();
   if (!pages.length) { showEmptyTeacher(); return; }
   const i = pages.findIndex(p => p.id === pgId);
   showPage(i >= 0 ? i : pages.length - 1);
   setSave('');
+}
+function blankEditor(text) {
+  clearPageSubs(); pages = []; pi = 0; strokes = []; base = []; overlay = []; seal = ''; ready = false; current = null;
+  hint.hidden = false; hint.textContent = text; $('datestamp').textContent = ''; renderSeal();
+  $('pageno').textContent = ''; $('prev').disabled = $('next').disabled = true;
+  paperKey = ''; resetLayers(); redraw();
 }
 function showEmptyTeacher() {
   clearPageSubs(); strokes = []; base = []; overlay = []; seal = ''; ready = false;
@@ -1026,7 +1042,7 @@ $('next').addEventListener('click', async () => { await flushSave(); showPage(pi
 $('add-page').addEventListener('click', async () => {
   await flushSave();
   const last = pages[pages.length - 1];
-  const pg = { id: newId(), n: last.n + 1, paper: last.paper, created: today(), strokes: [], _dec: [] };
+  const pg = { id: newId(), n: last.n + 1, paper: last.paper, created: today(), strokes: [], _dec: [], _nb: nb.id };
   pages.push(pg);
   showPage(pages.length - 1);
   markDirty();
@@ -1156,6 +1172,7 @@ async function restorePage(t, btn) {
     const pg = { ...body, id: of, n: at + 1 };
     await store.putPage(book.id, pg);
     await R.pages(book.id).doc(t.id).delete();
+    pg._nb = book.id;
     pages.splice(at, 0, pg);
     book.pages = pages.length; book.updated = today();
     await store.touchNotebook(book); book._savedPages = pages.length;
@@ -1284,15 +1301,17 @@ $('chat-form').addEventListener('submit', async e => {
 // next to the page ("<page id>-bg"), so the page itself stays small and pages without one cost nothing.
 const BG_W = 1200, BG_H = Math.round(BG_W * PAGE_H / PAGE_W), BG_MAX = 850000, PDF_MAX_PAGES = 30;
 const bgCache = {};
-const bgRef = pg => R.page(nb.id, pg.id + '-bg');
+const bgRef = pg => R.page(pg._nb || nb.id, pg.id + '-bg');
+// pictures are remembered per notebook and page, so a page never shows another notebook's picture
+const bgKey = pg => (pg._nb || (nb && nb.id) || '') + '/' + pg.id;
 async function ensureBg(pg) {
-  if (!pg.bg || (bgCache[pg.id] && bgCache[pg.id].stamp === pg.bg)) return;
+  if (!pg.bg || (bgCache[bgKey(pg)] && bgCache[bgKey(pg)].stamp === pg.bg)) return;
   try {
     const d = await (pg.bgSrc ? db.doc(pg.bgSrc) : bgRef(pg)).get();
     if (!d.exists) return;
     const data = d.data();
     const img = new Image(); img.src = data.data; await img.decode();
-    bgCache[pg.id] = { stamp: pg.bg, img, w: data.w, h: data.h };
+    bgCache[bgKey(pg)] = { stamp: pg.bg, img, w: data.w, h: data.h };
     if (pages[pi] === pg) { paperKey = ''; safeRedraw(); }
   } catch (e) { /* the page still works without its picture */ }
 }
@@ -1354,16 +1373,17 @@ async function fileToPics(file, progress) {
 }
 const picErr = err => err && err.message === 'pdfjs' ? 'PDF 도구를 불러오지 못했어요. 인터넷 연결을 확인해 주세요'
   : err && err.message === 'type' ? '그림 파일이나 PDF만 넣을 수 있어요' : '파일을 넣지 못했어요';
-async function setPageBg(pg, pic) {
+async function setPageBg(pg, pic, refs = R) {
   const stamp = Date.now();
-  await bgRef(pg).set({ bgOf: pg.id, data: pic.data, w: pic.w, h: pic.h, at: stamp });
+  await refs.page(pg._nb, pg.id + '-bg').set({ bgOf: pg.id, data: pic.data, w: pic.w, h: pic.h, at: stamp });
   pg.bg = stamp; pg.bgSrc = '';
   const img = new Image(); img.src = pic.data; await img.decode();
-  bgCache[pg.id] = { stamp, img, w: pic.w, h: pic.h };
+  bgCache[bgKey(pg)] = { stamp, img, w: pic.w, h: pic.h };
 }
-async function savePageNow(pg) {
+async function savePageNow(pg, refs = R) {
   const enc = (pg._dec || []).map(encodeCached);
-  await store.putPage(nb.id, { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H, bg: pg.bg || 0, bgSrc: pg.bg ? (pg.bgSrc || '') : '' });
+  const { id, ...b } = { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H, bg: pg.bg || 0, bgSrc: pg.bg ? (pg.bgSrc || '') : '' };
+  await refs.page(pg._nb, id).set(b);
 }
 $('bg-btn').addEventListener('click', async () => {
   const pg = pages[pi]; if (!pg || mode !== 'student') return;
@@ -1371,7 +1391,7 @@ $('bg-btn').addEventListener('click', async () => {
   const b = $('bg-btn');
   if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = '한 번 더 누르면 빠져요'; setTimeout(() => { b.dataset.armed = ''; if (pages[pi] === pg) b.textContent = pg.bg ? '배경 빼기' : '배경 넣기'; }, 2500); return; }
   b.dataset.armed = '';
-  pg.bg = 0; delete bgCache[pg.id]; paperKey = ''; redraw(); b.textContent = '배경 넣기';
+  pg.bg = 0; delete bgCache[bgKey(pg)]; paperKey = ''; redraw(); b.textContent = '배경 넣기';
   hint.hidden = strokes.length > 0;
   markDirty();
   bgRef(pg).delete().catch(() => {});
@@ -1380,30 +1400,40 @@ $('bg-file').addEventListener('change', async e => {
   const file = e.target.files && e.target.files[0];
   if (!file || !nb) return;
   await flushSave();
+  // everything below belongs to this notebook, even if it takes a while
+  const book = nb, list = pages, refs = R, start = list[pi];
   const btn = $('bg-btn'); btn.disabled = true;
+  busy(true, '배경을 넣는 중이에요…');
   try {
-    const pics = await fileToPics(file, t => setSave(t));
-    let target = pages[pi];
+    const pics = await fileToPics(file, t => { setSave(t); busy(true, t); });
+    let target = start;
     // an empty page takes the first picture; the rest become new pages at the end
     if (pics.length > 1 && (target._dec && target._dec.length || target.bg)) target = null;
-    let firstIdx = -1;
+    let first = null, done = 0;
     for (const pic of pics) {
       let pg = target; target = null;
       if (!pg) {
-        const last = pages[pages.length - 1];
-        pg = { id: newId(), n: last.n + 1, paper: '', created: today(), strokes: [], _dec: [] };
-        pages.push(pg);
+        const last = list[list.length - 1];
+        pg = { id: newId(), n: last.n + 1, paper: '', created: today(), strokes: [], _dec: [], _nb: book.id };
+        list.push(pg);
       }
-      await setPageBg(pg, pic);
-      await savePageNow(pg);
-      if (firstIdx < 0) firstIdx = pages.indexOf(pg);
+      pg._nb = book.id;
+      await setPageBg(pg, pic, refs);
+      await savePageNow(pg, refs);
+      if (!first) first = pg;
+      done++; if (pics.length > 1) busy(true, `PDF를 넣는 중이에요… ${done} / ${pics.length}쪽`);
     }
-    if (pics.length > 1) { nb.pages = pages.length; nb.updated = today(); await store.touchNotebook(nb); nb._savedPages = pages.length; }
-    showPage(firstIdx);
+    if (pics.length > 1) { book.pages = list.length; book.updated = today(); await refs.books.doc(book.id).update({ pages: book.pages, updated: book.updated }).catch(() => {}); book._savedPages = list.length; }
+    if (nb === book && pages === list) showPage(list.indexOf(first));
     setSave(pics.truncated ? `앞 ${pics.length}쪽만 넣었어요` : pics.length > 1 ? `PDF ${pics.length}쪽을 넣었어요` : '배경을 넣었어요');
   } catch (err) { setSave(picErr(err), true); }
-  finally { btn.disabled = false; }
+  finally { btn.disabled = false; busy(false); }
 });
+// a cover over the notebook while a long job runs, so nobody turns pages or leaves halfway
+function busy(on, text) {
+  const el = $('busy'); el.hidden = !on;
+  if (on && text) $('busy-text').textContent = text;
+}
 
 
 /* ---------- handouts: one worksheet into many students' notebooks ---------- */
@@ -1487,6 +1517,8 @@ function flushSave() {
   clearTimeout(saveTimer); saveTimer = null;
   if (!dirty || !nb || !pages[pi]) return saving;
   dirty = false;
+  // never write a page into a notebook it does not belong to
+  if (pages[pi]._nb && pages[pi]._nb !== nb.id) return saving;
   const pg = pages[pi], book = nb, enc = strokes.map(encodeCached), refs = R, who = mode;
   const r = sheet.getBoundingClientRect();
   let job;
@@ -1615,10 +1647,10 @@ function resetLayers() { for (const L of Object.values(layers)) { wipe(L.g); L.l
 function wipe(g) { g.save(); g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, g.canvas.width, g.canvas.height); g.restore(); }
 function paintPaper() {
   const W = frame.width, H = frame.height, kind = (pages[pi] && pages[pi].paper) || '';
-  const bgPg = pages[pi], bg = bgPg && bgPg.bg ? bgCache[bgPg.id] : null;
+  const bgPg = pages[pi], bg = bgPg && bgPg.bg ? bgCache[bgKey(bgPg)] : null;
   // the page id is part of the key: every page of one PDF carries the same stamp, so the stamp alone
   // made the next page reuse the previous page's picture
-  const key = `${kind}|${W}x${H}|${zoom}|${panX},${panY}|${bg && bg.stamp === bgPg.bg ? bgPg.id + ':' + bg.stamp : 0}`;
+  const key = `${kind}|${W}x${H}|${zoom}|${panX},${panY}|${bgPg ? bgKey(bgPg) : ''}|${bg && bg.stamp === bgPg.bg ? bg.stamp : 0}`;
   if (key === paperKey) return;
   paperKey = key; paperC.width = W; paperC.height = H;
   const g = pctx;
