@@ -1545,14 +1545,16 @@ function resize() {
   const availH = host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
   if (availW <= 0 || availH <= 0) return;
   scale = Math.min(availW / PAGE_W, availH / PAGE_H);
-  view = dpr * scale;
+  clampPan();
+  view = dpr * scale * zoom;
   sheet.style.width = (PAGE_W * scale) + 'px';
   sheet.style.height = (PAGE_H * scale) + 'px';
   sheet.style.setProperty('--s', scale);
-  const W = Math.round(PAGE_W * view), H = Math.round(PAGE_H * view);
+  const W = Math.round(PAGE_W * dpr * scale), H = Math.round(PAGE_H * dpr * scale);
   // the browser bar or keyboard can fire resize without changing the page: keep the canvases then
-  if (W === ink.width && H === ink.height) { redraw(); return; }
+  if (W === ink.width && H === ink.height) { applyView(); redraw(); return; }
   for (const c of [ink, live, offBase, offEdit, frame]) { c.width = W; c.height = H; }
+  applyView();
   resetLayers();
   redraw();
 }
@@ -1603,32 +1605,38 @@ const layers = { base: { c: offBase, g: bctx, len: 0, first: null }, edit: { c: 
 function syncLayer(L, arr) {
   let n = arr.length;
   if (n && arr[n - 1] === current) n--;
-  if (n < L.len || (L.len && arr[0] !== L.first)) { L.g.clearRect(0, 0, L.c.width, L.c.height); L.len = 0; }
+  if (n < L.len || (L.len && arr[0] !== L.first)) { wipe(L.g); L.len = 0; }
   for (let i = L.len; i < n; i++) drawStroke(L.g, arr[i]);
   L.g.globalCompositeOperation = 'source-over';
   L.len = n; L.first = arr[0] || null;
 }
-function resetLayers() { for (const L of Object.values(layers)) { L.g.clearRect(0, 0, L.c.width, L.c.height); L.len = 0; L.first = null; } paperKey = ''; }
+function resetLayers() { for (const L of Object.values(layers)) { wipe(L.g); L.len = 0; L.first = null; } paperKey = ''; }
+// clear a whole canvas whatever zoom/pan transform its context carries
+function wipe(g) { g.save(); g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, g.canvas.width, g.canvas.height); g.restore(); }
 function paintPaper() {
   const W = frame.width, H = frame.height, kind = (pages[pi] && pages[pi].paper) || '';
   const bgPg = pages[pi], bg = bgPg && bgPg.bg ? bgCache[bgPg.id] : null;
   // the page id is part of the key: every page of one PDF carries the same stamp, so the stamp alone
   // made the next page reuse the previous page's picture
-  const key = `${kind}|${W}x${H}|${bg && bg.stamp === bgPg.bg ? bgPg.id + ':' + bg.stamp : 0}`;
+  const key = `${kind}|${W}x${H}|${zoom}|${panX},${panY}|${bg && bg.stamp === bgPg.bg ? bgPg.id + ':' + bg.stamp : 0}`;
   if (key === paperKey) return;
   paperKey = key; paperC.width = W; paperC.height = H;
   const g = pctx;
+  g.setTransform(1, 0, 0, 1, 0, 0);
   g.fillStyle = cssVar('--paper'); g.fillRect(0, 0, W, H);
+  // page coordinates from here on (zoom and pan applied)
+  g.setTransform(1, 0, 0, 1, vx(), vy());
+  const PW = PAGE_W * view, PH = PAGE_H * view;
   g.fillStyle = cssVar('--rule');
   const step = 48 * view, t = Math.max(1, Math.round(dpr));
   const hasBg = bg && bg.stamp === bgPg.bg;
   if (hasBg) { /* a worksheet brings its own lines */ }
   else if (kind === 'lined') {
-    for (let y = 23 * view; y < H; y += step) g.fillRect(0, Math.round(y), W, t);
-    g.fillStyle = cssVar('--margin'); g.fillRect(Math.round(63 * view), 0, Math.max(1, Math.round(2 * view)), H);
+    for (let y = 23 * view; y < PH; y += step) g.fillRect(0, Math.round(y), PW, t);
+    g.fillStyle = cssVar('--margin'); g.fillRect(Math.round(63 * view), 0, Math.max(1, Math.round(2 * view)), PH);
   } else if (kind === 'grid') {
-    for (let y = 47 * view; y < H; y += step) g.fillRect(0, Math.round(y), W, t);
-    for (let x = 47 * view; x < W; x += step) g.fillRect(Math.round(x), 0, t, H);
+    for (let y = 47 * view; y < PH; y += step) g.fillRect(0, Math.round(y), PW, t);
+    for (let x = 47 * view; x < PW; x += step) g.fillRect(Math.round(x), 0, t, PH);
   }
   if (bg && bg.stamp === bgPg.bg) {
     // fit the picture inside the page, centred across and starting at the top
@@ -1636,6 +1644,7 @@ function paintPaper() {
     const dw = bg.w * k, dh = bg.h * k;
     g.drawImage(bg.img, Math.round((PAGE_W - dw) / 2 * view), 0, Math.round(dw * view), Math.round(dh * view));
   }
+  g.setTransform(1, 0, 0, 1, 0, 0);
 }
 function redraw() {
   pendingRedraw = false;
@@ -1646,14 +1655,110 @@ function redraw() {
   fctx.drawImage(paperC, 0, 0);
   if (base.length) fctx.drawImage(offBase, 0, 0);
   fctx.drawImage(offEdit, 0, 0);
+  fctx.setTransform(1, 0, 0, 1, vx(), vy());
   for (const s of overlay) drawStroke(fctx, s);
+  fctx.setTransform(1, 0, 0, 1, 0, 0);
   fctx.globalCompositeOperation = 'source-over';
   ctx.globalCompositeOperation = 'source-over';
-  ctx.drawImage(frame, 0, 0);
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(frame, 0, 0); ctx.restore();
 }
+/* ---------- zoom: two fingers zoom and move the page, the S Pen keeps writing ---------- */
+// The canvases stay the size of the sheet on screen; zoom and pan only change how page units map onto them,
+// so zooming in costs no extra memory. During a gesture the last picture is stretched with CSS (fast),
+// and the page is drawn properly again when the fingers lift.
+let zoom = 1, panX = 0, panY = 0;
+const ZOOM_MAX = 4;
+const vx = () => panX * dpr, vy = () => panY * dpr;
+function sheetW() { return PAGE_W * scale; }
+function sheetH() { return PAGE_H * scale; }
+function clampPan() {
+  panX = Math.min(0, Math.max(sheetW() - sheetW() * zoom, panX));
+  panY = Math.min(0, Math.max(sheetH() - sheetH() * zoom, panY));
+}
+function applyView() {
+  view = dpr * scale * zoom;
+  for (const g of [bctx, ectx, lctx, ctx]) g.setTransform(1, 0, 0, 1, vx(), vy());
+  const o = $('over'); if (o) o.style.transform = zoom === 1 ? '' : `translate(${panX}px, ${panY}px) scale(${zoom})`;
+  const z = $('zoom-reset'); if (z) z.textContent = Math.round(zoom * 100) + '%';
+}
+function setView(z, px, py) {
+  zoom = Math.min(ZOOM_MAX, Math.max(1, z)); panX = px; panY = py; clampPan();
+  ink.style.transform = ''; live.style.visibility = '';
+  applyView(); resetLayers(); redraw();
+}
+// zoom about a point on the sheet (sheet CSS px), keeping that point still
+function zoomAt(z, sx, sy) {
+  const nz = Math.min(ZOOM_MAX, Math.max(1, z));
+  const px = sx - (sx - panX) * nz / zoom, py = sy - (sy - panY) * nz / zoom;
+  setView(nz, px, py);
+}
+$('zoom-in').addEventListener('click', () => zoomAt(zoom * 1.5, sheetW() / 2, sheetH() / 2));
+$('zoom-out').addEventListener('click', () => zoomAt(zoom / 1.5, sheetW() / 2, sheetH() / 2));
+$('zoom-reset').addEventListener('click', () => setView(1, 0, 0));
+// finger gestures (only while fingers cannot write: palm rejection on and an S Pen known)
+const touches = new Map();
+let gesture = null, lastPenAt = 0;
+const fingersNavigate = () => palmBlock && penSeen;
+function sheetXY(e) { const r = sheet.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function gestureStart() {
+  const ps = [...touches.values()];
+  const c = ps.length > 1 ? { x: (ps[0].x + ps[1].x) / 2, y: (ps[0].y + ps[1].y) / 2 } : ps[0];
+  const d = ps.length > 1 ? Math.hypot(ps[0].x - ps[1].x, ps[0].y - ps[1].y) : 0;
+  gesture = { z0: zoom, px0: panX, py0: panY, c0: c, d0: d, n: ps.length, z: zoom, px: panX, py: panY };
+}
+function gestureMove() {
+  const g = gesture, ps = [...touches.values()];
+  if (!g || !ps.length) return;
+  const c = ps.length > 1 ? { x: (ps[0].x + ps[1].x) / 2, y: (ps[0].y + ps[1].y) / 2 } : ps[0];
+  let z = g.z0;
+  if (g.n > 1 && ps.length > 1 && g.d0 > 10) z = Math.min(ZOOM_MAX, Math.max(1, g.z0 * Math.hypot(ps[0].x - ps[1].x, ps[0].y - ps[1].y) / g.d0));
+  if (z === 1 && g.z0 === 1 && g.n === 1) return; // one finger on an unzoomed page: nothing to move
+  // the page point under the starting centre follows the fingers' centre
+  let px = c.x - (g.c0.x - g.px0) * z / g.z0, py = c.y - (g.c0.y - g.py0) * z / g.z0;
+  px = Math.min(0, Math.max(sheetW() - sheetW() * z, px)); py = Math.min(0, Math.max(sheetH() - sheetH() * z, py));
+  g.z = z; g.px = px; g.py = py; g.moved = true;
+  // quick preview: stretch the picture already on screen
+  const r = z / zoom;
+  ink.style.transformOrigin = '0 0';
+  ink.style.transform = `translate(${px - r * panX}px, ${py - r * panY}px) scale(${r})`;
+  live.style.visibility = 'hidden';
+  const o = $('over'); if (o) o.style.transform = `translate(${px}px, ${py}px) scale(${z})`;
+}
+function gestureEnd() {
+  const g = gesture; gesture = null;
+  if (g && g.moved) setView(g.z, g.px, g.py);
+}
+sheet.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'pen') { lastPenAt = Date.now(); if (gesture) { touches.clear(); gestureEnd(); } return; }
+  if (e.pointerType !== 'touch' || !fingersNavigate()) return;
+  // a palm resting while the pen writes or hovers must not move the page
+  if ((current && current.type === 'pen') || Date.now() - lastPenAt < 600) return;
+  touches.set(e.pointerId, sheetXY(e));
+  if (touches.size > 2) return;
+  gestureStart();
+}, true);
+sheet.addEventListener('pointermove', e => {
+  if (e.pointerType === 'pen') { lastPenAt = Date.now(); return; }
+  if (!touches.has(e.pointerId)) return;
+  touches.set(e.pointerId, sheetXY(e));
+  if (gesture) gestureMove();
+}, true);
+function touchUp(e) {
+  if (!touches.has(e.pointerId)) return;
+  touches.delete(e.pointerId);
+  gestureEnd();
+  if (touches.size) gestureStart(); // one finger left after a pinch: keep moving from here
+}
+sheet.addEventListener('pointerup', touchUp, true);
+sheet.addEventListener('pointercancel', touchUp, true);
+// mouse (teacher's computer): Ctrl + wheel zooms, wheel moves a zoomed page
+sheet.addEventListener('wheel', e => {
+  if (e.ctrlKey) { e.preventDefault(); const p = sheetXY(e); zoomAt(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), p.x, p.y); return; }
+  if (zoom > 1) { e.preventDefault(); setView(zoom, panX - e.deltaX, panY - e.deltaY); }
+}, { passive: false });
 function pt(e) {
   const r = sheet.getBoundingClientRect();
-  return { x: (e.clientX - r.left) / scale, y: (e.clientY - r.top) / scale, p: e.pointerType === 'pen' ? e.pressure : 0.5 };
+  return { x: (e.clientX - r.left - panX) / (scale * zoom), y: (e.clientY - r.top - panY) / (scale * zoom), p: e.pointerType === 'pen' ? e.pressure : 0.5 };
 }
 function setStatus(type) {
   if (type === 'pen') { dot.classList.add('pen'); statusText.textContent = palmBlock ? 'S펜 인식됨 · 손 터치 무시 중' : 'S펜 인식됨'; }
@@ -1661,7 +1766,7 @@ function setStatus(type) {
   else statusText.textContent = '마우스로 쓰는 중';
 }
 const allowed = e => ready && !!pages[pi] && !(e.pointerType === 'touch' && palmBlock && penSeen);
-function clearLive() { lctx.clearRect(0, 0, live.width, live.height); }
+function clearLive() { wipe(lctx); }
 function renderLive() { clearLive(); drawStroke(lctx, current); lctx.globalCompositeOperation = 'source-over'; }
 
 // straight-line helper: draw, then hold the pen still → the stroke becomes a straight line
