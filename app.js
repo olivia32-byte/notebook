@@ -969,6 +969,7 @@ function setEditorChrome() {
 
 function showPage(i) {
   clearPageSubs(); resetDelPage();
+  if (panY !== 0) { panY = 0; applyView(); resetLayers(); }
   pi = Math.max(0, Math.min(i, pages.length - 1));
   const pg = pages[pi];
   sheet.className = pg.paper || '';
@@ -1610,13 +1611,17 @@ function resize() {
   const availW = host.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
   const availH = host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
   if (availW <= 0 || availH <= 0) return;
-  scale = Math.min(availW / PAGE_W, availH / PAGE_H);
+  // The page always fills the width. Upright, the whole page fits; turned sideways, the page is taller
+  // than the screen and moves up and down (fingers, the bar on the right, or the mouse wheel).
+  scale = availW / PAGE_W;
+  boxW = availW; boxH = Math.min(availH, PAGE_H * scale);
+  if (PAGE_H * scale > availH && availH / PAGE_H * PAGE_W > availW * 0.97) { scale = availH / PAGE_H; boxW = PAGE_W * scale; boxH = availH; }
   clampPan();
   view = dpr * scale * zoom;
-  sheet.style.width = (PAGE_W * scale) + 'px';
-  sheet.style.height = (PAGE_H * scale) + 'px';
+  sheet.style.width = boxW + 'px';
+  sheet.style.height = boxH + 'px';
   sheet.style.setProperty('--s', scale);
-  const W = Math.round(PAGE_W * dpr * scale), H = Math.round(PAGE_H * dpr * scale);
+  const W = Math.round(boxW * dpr), H = Math.round(boxH * dpr);
   // the browser bar or keyboard can fire resize without changing the page: keep the canvases then
   if (W === ink.width && H === ink.height) { applyView(); redraw(); return; }
   for (const c of [ink, live, offBase, offEdit, frame]) { c.width = W; c.height = H; }
@@ -1732,20 +1737,22 @@ function redraw() {
 // The canvases stay the size of the sheet on screen; zoom and pan only change how page units map onto them,
 // so zooming in costs no extra memory. During a gesture the last picture is stretched with CSS (fast),
 // and the page is drawn properly again when the fingers lift.
-let zoom = 1, panX = 0, panY = 0;
+let zoom = 1, panX = 0, panY = 0, boxW = 0, boxH = 0;
 const ZOOM_MAX = 4;
 const vx = () => panX * dpr, vy = () => panY * dpr;
-function sheetW() { return PAGE_W * scale; }
-function sheetH() { return PAGE_H * scale; }
-function clampPan() {
-  panX = Math.min(0, Math.max(sheetW() - sheetW() * zoom, panX));
-  panY = Math.min(0, Math.max(sheetH() - sheetH() * zoom, panY));
-}
+function sheetW() { return boxW || PAGE_W * scale; }
+function sheetH() { return boxH || PAGE_H * scale; }
+const clampX = (x, z) => Math.min(0, Math.max(sheetW() - PAGE_W * scale * z, x));
+const clampY = (y, z) => Math.min(0, Math.max(sheetH() - PAGE_H * scale * z, y));
+const canPan = z => PAGE_W * scale * z > sheetW() + 1 || PAGE_H * scale * z > sheetH() + 1;
+function clampPan() { panX = clampX(panX, zoom); panY = clampY(panY, zoom); }
 function applyView() {
   view = dpr * scale * zoom;
   for (const g of [bctx, ectx, lctx, ctx]) g.setTransform(1, 0, 0, 1, vx(), vy());
-  const o = $('over'); if (o) o.style.transform = zoom === 1 ? '' : `translate(${panX}px, ${panY}px) scale(${zoom})`;
+  const o = $('over');
+  if (o) { o.style.width = PAGE_W * scale + 'px'; o.style.height = PAGE_H * scale + 'px'; o.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`; }
   const z = $('zoom-reset'); if (z) z.textContent = Math.round(zoom * 100) + '%';
+  updateVbar();
 }
 function setView(z, px, py) {
   zoom = Math.min(ZOOM_MAX, Math.max(1, z)); panX = px; panY = py; clampPan();
@@ -1778,10 +1785,10 @@ function gestureMove() {
   const c = ps.length > 1 ? { x: (ps[0].x + ps[1].x) / 2, y: (ps[0].y + ps[1].y) / 2 } : ps[0];
   let z = g.z0;
   if (g.n > 1 && ps.length > 1 && g.d0 > 10) z = Math.min(ZOOM_MAX, Math.max(1, g.z0 * Math.hypot(ps[0].x - ps[1].x, ps[0].y - ps[1].y) / g.d0));
-  if (z === 1 && g.z0 === 1 && g.n === 1) return; // one finger on an unzoomed page: nothing to move
+  if (g.n === 1 && !canPan(z)) return; // one finger on a page that fits: nothing to move
   // the page point under the starting centre follows the fingers' centre
   let px = c.x - (g.c0.x - g.px0) * z / g.z0, py = c.y - (g.c0.y - g.py0) * z / g.z0;
-  px = Math.min(0, Math.max(sheetW() - sheetW() * z, px)); py = Math.min(0, Math.max(sheetH() - sheetH() * z, py));
+  px = clampX(px, z); py = clampY(py, z);
   g.z = z; g.px = px; g.py = py; g.moved = true;
   // quick preview: stretch the picture already on screen
   const r = z / zoom;
@@ -1794,7 +1801,39 @@ function gestureEnd() {
   const g = gesture; gesture = null;
   if (g && g.moved) setView(g.z, g.px, g.py);
 }
+// the bar on the right: drag it (finger, pen or mouse) to move a page taller than the screen
+function updateVbar() {
+  const bar = $('vbar'); if (!bar) return;
+  const full = PAGE_H * scale * zoom, show = full > sheetH() + 1;
+  bar.hidden = !show; if (!show) return;
+  const h = Math.max(40, sheetH() * sheetH() / full), top = (sheetH() - h) * (-panY / (full - sheetH()));
+  const th = $('vbar-thumb'); th.style.height = h + 'px'; th.style.transform = `translateY(${top}px)`;
+}
+(() => {
+  const bar = $('vbar'); let drag = null;
+  bar.addEventListener('pointerdown', e => {
+    e.stopPropagation(); e.preventDefault(); bar.setPointerCapture(e.pointerId);
+    const full = PAGE_H * scale * zoom, h = $('vbar-thumb').offsetHeight;
+    const r = bar.getBoundingClientRect(), y = e.clientY - r.top;
+    const top = (sheetH() - h) * (-panY / (full - sheetH()));
+    // tapping the track jumps there; dragging the thumb keeps the grip point
+    const grip = y >= top && y <= top + h ? y - top : h / 2;
+    drag = { id: e.pointerId, grip, h, full };
+    move(e);
+  });
+  function move(e) {
+    if (!drag || e.pointerId !== drag.id) return;
+    e.stopPropagation();
+    const r = bar.getBoundingClientRect(), t = Math.min(Math.max(e.clientY - r.top - drag.grip, 0), sheetH() - drag.h);
+    const py = -t / Math.max(1, sheetH() - drag.h) * (drag.full - sheetH());
+    panY = clampY(py, zoom); applyView(); paperKey = ''; resetLayers(); redraw();
+  }
+  bar.addEventListener('pointermove', move);
+  const up = e => { if (drag && e.pointerId === drag.id) { e.stopPropagation(); drag = null; } };
+  bar.addEventListener('pointerup', up); bar.addEventListener('pointercancel', up);
+})();
 sheet.addEventListener('pointerdown', e => {
+  if (e.target.closest && e.target.closest('#vbar')) return;
   if (e.pointerType === 'pen') { lastPenAt = Date.now(); if (gesture) { touches.clear(); gestureEnd(); } return; }
   if (e.pointerType !== 'touch' || !fingersNavigate()) return;
   // a palm resting while the pen writes or hovers must not move the page
@@ -1820,7 +1859,7 @@ sheet.addEventListener('pointercancel', touchUp, true);
 // mouse (teacher's computer): Ctrl + wheel zooms, wheel moves a zoomed page
 sheet.addEventListener('wheel', e => {
   if (e.ctrlKey) { e.preventDefault(); const p = sheetXY(e); zoomAt(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), p.x, p.y); return; }
-  if (zoom > 1) { e.preventDefault(); setView(zoom, panX - e.deltaX, panY - e.deltaY); }
+  if (canPan(zoom)) { e.preventDefault(); setView(zoom, panX - e.deltaX, panY - e.deltaY); }
 }, { passive: false });
 function pt(e) {
   const r = sheet.getBoundingClientRect();
