@@ -2046,9 +2046,13 @@ sheet.addEventListener('wheel', e => {
   if (e.ctrlKey) { e.preventDefault(); const p = sheetXY(e); zoomAt(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), p.x, p.y); return; }
   if (canPan(zoom)) { e.preventDefault(); setView(zoom, panX - e.deltaX, panY - e.deltaY); }
 }, { passive: false });
+// Where the pen is, in page units. Measured against the writing canvas exactly as it is shown on screen
+// (its pixels per screen point), so the ink lands under the pen tip even if the sheet's shown size and the
+// size the app last set have drifted apart; before, that drift grew toward the right edge.
 function pt(e) {
-  const r = sheet.getBoundingClientRect();
-  return { x: (e.clientX - r.left - panX) / (scale * zoom), y: (e.clientY - r.top - panY) / (scale * zoom), p: e.pointerType === 'pen' ? e.pressure : 0.5 };
+  const r = ink.getBoundingClientRect();
+  const kx = r.width ? ink.width / r.width : dpr, ky = r.height ? ink.height / r.height : dpr;
+  return { x: ((e.clientX - r.left) * kx - vx()) / view, y: ((e.clientY - r.top) * ky - vy()) / view, p: e.pointerType === 'pen' ? e.pressure : 0.5 };
 }
 function setStatus(type) {
   if (type === 'pen') { dot.classList.add('pen'); statusText.textContent = palmBlock ? 'S펜 인식됨 · 손 터치 무시 중' : 'S펜 인식됨'; }
@@ -2235,6 +2239,12 @@ document.addEventListener('fullscreenchange', onFs);
 document.addEventListener('webkitfullscreenchange', onFs);
 window.addEventListener('orientationchange', () => setTimeout(resize, 250));
 window.addEventListener('resize', () => { resize(); if (!$('class').hidden) layoutKids(); });
+// the space for the page can also change without the window changing (the toolbar wrapping onto a second
+// line, the chat or bin panel opening): size the page again then too
+if (window.ResizeObserver) {
+  let roTimer = null;
+  new ResizeObserver(() => { clearTimeout(roTimer); roTimer = setTimeout(() => { if (!$('book').hidden && !current && !gesture) resize(); }, 120); }).observe(sheet.parentElement);
+}
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
 
