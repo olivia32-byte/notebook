@@ -1484,6 +1484,136 @@ function busy(on, text) {
 }
 
 
+/* ---------- export: one page as a picture, or the whole notebook as a PDF (teacher) ---------- */
+// Each page is drawn again off screen at twice the page size: paper and lines, the worksheet picture,
+// the student's ink, the teacher's red pen, the date and the stamp. Erasing only removes ink of its own
+// layer, the same as on screen.
+const EX_K = 2;
+function loadImg(src) { return new Promise((ok, bad) => { const im = new Image(); im.onload = () => ok(im); im.onerror = bad; im.src = src; }); }
+async function renderExport(pg, book, refs) {
+  const isOpen = nb === book && pages[pi] === pg;
+  let studentRaw = pg.strokes || [], fb = {};
+  try { const d = await refs.page(book.id, pg.id).get(); if (d.exists) studentRaw = d.data().strokes || []; } catch (e) { /* keep what we have */ }
+  const studentInk = isOpen && base.length ? base : studentRaw.map(decode);
+  let teacherInk, sealText;
+  if (isOpen) { teacherInk = strokes; sealText = seal; }
+  else {
+    try { const d = await refs.fb(book.id, pg.id).get(); if (d.exists) fb = d.data(); } catch (e) { /* no feedback */ }
+    teacherInk = (fb.strokes || []).map(decode); sealText = fb.seal || '';
+  }
+  let pic = null;
+  if (pg.bg) { try { const got = await fetchBg(pg); if (got) pic = { img: await loadImg(got.data), w: got.w, h: got.h }; } catch (e) { /* page without its picture */ } }
+  const k = EX_K, W = PAGE_W * k, H = PAGE_H * k;
+  const out = document.createElement('canvas'); out.width = W; out.height = H;
+  const g = out.getContext('2d');
+  g.fillStyle = '#fffdf7'; g.fillRect(0, 0, W, H);
+  const step = 48 * k, t = k;
+  if (!pic && pg.paper === 'lined') {
+    g.fillStyle = '#b9d3ea'; for (let y = 23 * k; y < H; y += step) g.fillRect(0, Math.round(y), W, t);
+    g.fillStyle = '#f0a6a6'; g.fillRect(63 * k, 0, 2 * k, H);
+  } else if (!pic && pg.paper === 'grid') {
+    g.fillStyle = '#b9d3ea';
+    for (let y = 47 * k; y < H; y += step) g.fillRect(0, Math.round(y), W, t);
+    for (let x = 47 * k; x < W; x += step) g.fillRect(Math.round(x), 0, t, H);
+  }
+  if (pic) { const f = Math.min(PAGE_W / pic.w, PAGE_H / pic.h), dw = pic.w * f, dh = pic.h * f; g.drawImage(pic.img, (PAGE_W - dw) / 2 * k, 0, dw * k, dh * k); }
+  for (const ink of [studentInk, teacherInk]) {
+    if (!ink.length) continue;
+    const L = document.createElement('canvas'); L.width = W; L.height = H;
+    const lg = L.getContext('2d');
+    for (const st of ink) drawStroke(lg, st, k);
+    g.globalCompositeOperation = 'source-over'; g.drawImage(L, 0, 0);
+    L.width = L.height = 0;
+  }
+  const font = getComputedStyle(document.documentElement).getPropertyValue('--font-title') || 'sans-serif';
+  if (pg.created) {
+    g.fillStyle = '#8aa0b2'; g.font = `${15 * k}px ${font}`; g.textAlign = 'right'; g.textBaseline = 'top';
+    g.fillText(fmtDate(pg.created), W - 18 * k, 10 * k);
+  }
+  if (sealText) {
+    const r = 46 * k, cx = W - (22 + 46) * k, cy = (40 + 46) * k;
+    g.save(); g.translate(cx, cy); g.rotate(-12 * Math.PI / 180); g.globalAlpha = 0.85;
+    g.strokeStyle = '#d33a2c'; g.fillStyle = '#d33a2c';
+    g.lineWidth = 3 * k; g.beginPath(); g.arc(0, 0, r - 1.5 * k, 0, Math.PI * 2); g.stroke();
+    g.lineWidth = 2 * k; g.beginPath(); g.arc(0, 0, r - 7 * k, 0, Math.PI * 2); g.stroke();
+    g.font = `${17 * k}px ${font}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    const words = sealText.split(' '), lines = [];
+    for (const w of words) { const last = lines[lines.length - 1]; if (last && g.measureText(last + ' ' + w).width < r * 1.45) lines[lines.length - 1] = last + ' ' + w; else lines.push(w); }
+    const lh = 19.5 * k; lines.forEach((ln, i) => g.fillText(ln, 0, (i - (lines.length - 1) / 2) * lh));
+    g.restore();
+  }
+  return out;
+}
+const canvasBlob = (c, type, q) => new Promise((ok, bad) => c.toBlob(b => b ? ok(b) : bad(new Error('blob')), type, q));
+function saveFile(blob, name) {
+  const url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = name; document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+const safeName = s => String(s || '').replace(/[\\/:*?"<>|]+/g, ' ').trim();
+function exportBase(book) {
+  const st = tStudent;
+  return safeName(`${st ? st.num + '번 ' + (st.name || '') : ''} ${book.name}`).replace(/\s+/g, '_');
+}
+// a small PDF writer: one JPEG picture per page, A4 width
+async function makePdf(jpegs) {
+  const enc = new TextEncoder(), parts = [], offs = [];
+  let len = 0;
+  const put = x => { const b = typeof x === 'string' ? enc.encode(x) : x; parts.push(b); len += b.length; };
+  const obj = (n, body) => { offs[n] = len; put(`${n} 0 obj\n`); for (const b of [].concat(body)) put(b); put('\nendobj\n'); };
+  put('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n');
+  const n = jpegs.length, kids = [];
+  for (let i = 0; i < n; i++) kids.push(`${3 + i * 3} 0 R`);
+  obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+  obj(2, `<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${n} >>`);
+  const PW = 595.28, PH = +(PW * PAGE_H / PAGE_W).toFixed(2);
+  for (let i = 0; i < n; i++) {
+    const { bytes, w, h } = jpegs[i], pn = 3 + i * 3;
+    obj(pn, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PW} ${PH}] /Resources << /XObject << /Im0 ${pn + 2} 0 R >> >> /Contents ${pn + 1} 0 R >>`);
+    const content = `q ${PW} 0 0 ${PH} 0 0 cm /Im0 Do Q`;
+    obj(pn + 1, [`<< /Length ${content.length} >>\nstream\n`, content, '\nendstream']);
+    obj(pn + 2, [`<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${bytes.length} >>\nstream\n`, bytes, '\nendstream']);
+  }
+  const total = 3 + n * 3, xref = len;
+  let x = `xref\n0 ${total}\n0000000000 65535 f \n`;
+  for (let i = 1; i < total; i++) x += String(offs[i]).padStart(10, '0') + ' 00000 n \n';
+  put(x + `trailer\n<< /Size ${total} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  return new Blob(parts, { type: 'application/pdf' });
+}
+let exporting = false;
+async function exportPage() {
+  if (exporting || !nb || !pages[pi]) return;
+  exporting = true; flushSave();
+  const book = nb, pg = pages[pi], refs = R;
+  busy(true, '사진 만드는 중…');
+  try {
+    const c = await renderExport(pg, book, refs);
+    const blob = await canvasBlob(c, 'image/png'); c.width = c.height = 0;
+    saveFile(blob, `${exportBase(book)}_${pi + 1}쪽.png`);
+    toast('사진을 내려받았어요 (내 파일 → 다운로드)');
+  } catch (e) { toast('사진을 만들지 못했어요. ' + errText(e)); }
+  finally { busy(false); exporting = false; }
+}
+async function exportPdf() {
+  if (exporting || !nb || !pages.length) return;
+  exporting = true; flushSave();
+  const book = nb, list = pages.slice(), refs = R, jpegs = [];
+  try {
+    for (let i = 0; i < list.length; i++) {
+      busy(true, `PDF 만드는 중… ${i + 1} / ${list.length}쪽`);
+      const c = await renderExport(list[i], book, refs);
+      const blob = await canvasBlob(c, 'image/jpeg', 0.88);
+      jpegs.push({ bytes: new Uint8Array(await blob.arrayBuffer()), w: c.width, h: c.height });
+      c.width = c.height = 0;
+    }
+    saveFile(await makePdf(jpegs), `${exportBase(book)}.pdf`);
+    toast(`PDF를 내려받았어요 (${list.length}쪽 · 내 파일 → 다운로드)`);
+  } catch (e) { toast('PDF를 만들지 못했어요. ' + errText(e)); }
+  finally { busy(false); exporting = false; }
+}
+$('ex-png').addEventListener('click', exportPage);
+$('ex-pdf').addEventListener('click', exportPdf);
+
 /* ---------- handouts: one worksheet into many students' notebooks ---------- */
 let membersSynced = '';
 async function syncMembers() {
