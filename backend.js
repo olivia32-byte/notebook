@@ -21,6 +21,8 @@ export async function createBackend(config) {
     return {
       id: ref.id, path: ref.path,
       async get() { return snap(await fs.getDoc(ref)); },
+      // the copy already on this tablet (no network); null when there is none
+      async getCache() { try { return snap(await fs.getDocFromCache(ref)); } catch (e) { return null; } },
       set(d) { return fs.setDoc(ref, d); },
       update(d) { return fs.updateDoc(ref, d); },
       delete() { return fs.deleteDoc(ref); },

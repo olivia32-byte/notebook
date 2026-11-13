@@ -979,7 +979,7 @@ function showPage(i) {
   $('next').disabled = pi === pages.length - 1;
   overlay = []; base = []; seal = ''; msgs = []; chatKey = ''; editingMsg = null; renderChat();
   $('bg-btn').textContent = pg.bg ? '배경 빼기' : '배경 넣기';
-  ensureBg(pg);
+  ensureBg(pg); setTimeout(() => { if (pages[pi] === pg) prefetchBg(pi); }, 400);
   if (mode === 'student') {
     if (!pg._dec) pg._dec = (pg.strokes || []).map(decode);
     strokes = pg._dec; ready = true;
@@ -1304,16 +1304,48 @@ const bgCache = {};
 const bgRef = pg => R.page(pg._nb || nb.id, pg.id + '-bg');
 // pictures are remembered per notebook and page, so a page never shows another notebook's picture
 const bgKey = pg => (pg._nb || (nb && nb.id) || '') + '/' + pg.id;
+// Background pictures: the picture data (a JPEG, ~100-300 KB) is kept for every page seen, but only a
+// few decoded pictures stay in memory (each takes several MB on the tablet). The tablet's own copy is
+// used first, so turning back to a page needs no download, and the next and previous pages are
+// fetched in advance while the student writes.
+const bgData = {}, bgLoading = {}, BG_DECODED = 6;
+let bgOrder = [];
+function keepDecoded(key) {
+  bgOrder = bgOrder.filter(k => k !== key); bgOrder.push(key);
+  while (bgOrder.length > BG_DECODED) { const old = bgOrder.shift(); if (bgCache[old] && !(pages[pi] && bgKey(pages[pi]) === old)) delete bgCache[old]; }
+}
+async function fetchBg(pg) {
+  const key = bgKey(pg);
+  if (bgData[key] && bgData[key].stamp === pg.bg) return bgData[key];
+  if (bgLoading[key]) return bgLoading[key];
+  const ref = pg.bgSrc ? db.doc(pg.bgSrc) : bgRef(pg);
+  return (bgLoading[key] = (async () => {
+    try {
+      let d = ref.getCache ? await ref.getCache() : null;
+      // a picture never changes once saved; its stamp tells whether the tablet's copy is the right one
+      if (!d || !d.exists || (!pg.bgSrc && d.data().at && d.data().at !== pg.bg)) d = await ref.get();
+      if (!d.exists) return null;
+      const data = d.data();
+      return (bgData[key] = { stamp: pg.bg, data: data.data, w: data.w, h: data.h });
+    } finally { delete bgLoading[key]; }
+  })());
+}
 async function ensureBg(pg) {
-  if (!pg.bg || (bgCache[bgKey(pg)] && bgCache[bgKey(pg)].stamp === pg.bg)) return;
+  if (!pg || !pg.bg) return;
+  const key = bgKey(pg);
+  if (bgCache[key] && bgCache[key].stamp === pg.bg) { keepDecoded(key); return; }
   try {
-    const d = await (pg.bgSrc ? db.doc(pg.bgSrc) : bgRef(pg)).get();
-    if (!d.exists) return;
-    const data = d.data();
-    const img = new Image(); img.src = data.data; await img.decode();
-    bgCache[bgKey(pg)] = { stamp: pg.bg, img, w: data.w, h: data.h };
+    const got = await fetchBg(pg);
+    if (!got) return;
+    const img = new Image(); img.src = got.data; await img.decode();
+    bgCache[key] = { stamp: pg.bg, img, w: got.w, h: got.h };
+    keepDecoded(key);
     if (pages[pi] === pg) { paperKey = ''; safeRedraw(); }
   } catch (e) { /* the page still works without its picture */ }
+}
+// fetch (not decode) the pictures of the pages around this one
+function prefetchBg(i) {
+  for (const j of [i + 1, i - 1, i + 2]) { const q = pages[j]; if (q && q.bg) fetchBg(q).catch(() => {}); }
 }
 function toJpeg(src, sw, sh) {
   const k = Math.min(BG_W / sw, BG_H / sh, 1);
@@ -1379,6 +1411,8 @@ async function setPageBg(pg, pic, refs = R) {
   pg.bg = stamp; pg.bgSrc = '';
   const img = new Image(); img.src = pic.data; await img.decode();
   bgCache[bgKey(pg)] = { stamp, img, w: pic.w, h: pic.h };
+  bgData[bgKey(pg)] = { stamp, data: pic.data, w: pic.w, h: pic.h };
+  keepDecoded(bgKey(pg));
 }
 async function savePageNow(pg, refs = R) {
   const enc = (pg._dec || []).map(encodeCached);
