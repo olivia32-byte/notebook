@@ -39,6 +39,7 @@ export async function createBackend(config) {
       where(f, op, v) { return wrapCol(ref, fs.query(q, fs.where(f, op, v))); },
       limit(n) { return wrapCol(ref, fs.query(q, fs.limit(n))); },
       async get() { return qsnap(await fs.getDocs(q)); },
+      async getCache() { try { return qsnap(await fs.getDocsFromCache(q)); } catch (e) { return null; } },
       onSnapshot(next, err) { return fs.onSnapshot(q, s => next(qsnap(s)), err); },
     };
   }

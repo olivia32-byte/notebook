@@ -846,9 +846,33 @@ async function openStudentNotebook(n) {
   show('book');
   $('book-name').textContent = n.name;
   setSave('불러오는 중…');
-  let list = [];
-  try { list = await store.listPages(n.id); } catch (e) { setSave('불러오지 못했어요', true); }
+  // On slow Wi-Fi the server can take many seconds to answer, and the page could not be written on
+  // meanwhile. After 2.5 s the copy on this tablet is used; pages that only the server has (a worksheet
+  // the teacher handed out) are added when its answer arrives.
+  let list = null, fromCache = false;
+  const q = R.pages(n.id).orderBy('n');
+  const server = q.get().then(sn => sn.docs.map(d => ({ ...d.data(), id: d.id })));
+  try {
+    list = await Promise.race([server, new Promise(r => setTimeout(r, 2500))]);
+    if (!list && q.getCache) {
+      const c = await q.getCache();
+      if (c && c.size) { list = c.docs.map(d => ({ ...d.data(), id: d.id })); fromCache = true; }
+    }
+    if (!list) list = await server;
+  } catch (e) { list = []; setSave('불러오지 못했어요', true); }
   if (seq !== openSeq || nb !== n) return;
+  if (fromCache) server.then(full => {
+    if (seq !== openSeq || nb !== n) return;
+    const have = new Set(pages.map(p => p.id));
+    const extra = full.filter(p => !have.has(p.id));
+    if (!extra.length) return;
+    const cur = pages[pi];
+    for (const p of extra) { p._nb = n.id; pages.push(p); }
+    pages.sort((a, b) => a.n - b.n);
+    pi = Math.max(0, pages.indexOf(cur));
+    $('pageno').textContent = `${pi + 1} / ${pages.length}쪽`;
+    $('prev').disabled = pi === 0; $('next').disabled = pi === pages.length - 1;
+  }).catch(() => {});
   if (!list.length) list = [{ id: newId(), n: 1, paper: n.paper || 'lined', created: n.created, strokes: [] }];
   for (const p of list) p._nb = n.id;
   pages = list;
@@ -969,6 +993,7 @@ function setEditorChrome() {
 }
 
 function showPage(i) {
+  if (current) { clearTimeout(holdTimer); holdTimer = null; current = null; activeId = null; clearLive(); }
   clearPageSubs(); resetDelPage();
   if (panY !== 0) { panY = 0; applyView(); resetLayers(); }
   pi = Math.max(0, Math.min(i, pages.length - 1));
@@ -2036,7 +2061,7 @@ function renderLive() { clearLive(); drawStroke(lctx, current); lctx.globalCompo
 
 // straight-line helper: draw, then hold the pen still → the stroke becomes a straight line
 const HOLD_MS = 500, HOLD_SLOP = 5, MIN_LEN = 60, AXIS_DEG = 7;
-let holdTimer = null, holdAnchor = null;
+let holdTimer = null, holdAnchor = null, lastMoveAt = 0;
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 function aim(a, b) {
   const deg = Math.abs(Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI);
@@ -2070,9 +2095,13 @@ sheet.addEventListener('pointerdown', e => {
       clearTimeout(holdTimer); clearLive(); current = null; activeId = null;
     }
   }
+  // a stroke still "in hand" from a lift that was never reported: finish it, a new pen touch means it ended
+  if (current && e.pointerId !== activeId && ((e.pointerType === 'pen' && current.type === 'pen') || Date.now() - lastMoveAt > 1500)) finishStroke();
+  if (current && e.pointerId === activeId && e.pointerType === 'pen') finishStroke();
   if (!allowed(e) || current) return;
   e.preventDefault();
-  sheet.setPointerCapture(e.pointerId);
+  try { sheet.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
+  lastMoveAt = Date.now();
   const erase = tool === 'eraser' || (e.pointerType === 'pen' && (e.buttons & 2 || e.buttons & 32));
   const hl = !erase && tool === 'hl';
   current = { pts: [pt(e)], color, size, erase, hl, live: hl, snap: false, type: e.pointerType };
@@ -2088,6 +2117,7 @@ sheet.addEventListener('pointermove', e => {
   if (e.pointerType === 'pen' && !penSeen) notePen();
   if (!current || e.pointerId !== activeId) return;
   e.preventDefault();
+  lastMoveAt = Date.now();
   if (current.snap) {
     const a = current.pts[0];
     current.pts[1] = { ...aim(a, pt(e)), p: a.p };
@@ -2112,6 +2142,13 @@ sheet.addEventListener('pointermove', e => {
 });
 function end(e) {
   if (!current || e.pointerId !== activeId) return;
+  finishStroke();
+}
+// Finish the stroke in hand. Normally the pen lifting does this, but Android sometimes never reports the
+// lift (the pen leaves the screen sideways, a system gesture, the screen turning off). The stroke then
+// stayed "in hand" and every later touch of the pen was ignored, so nothing could be written any more.
+function finishStroke() {
+  if (!current) return;
   clearTimeout(holdTimer); holdTimer = null; holdAnchor = null;
   clearLive();
   if (current.live) { strokes.push(current); drawStroke(ctx, current); }
@@ -2125,6 +2162,8 @@ function end(e) {
 }
 sheet.addEventListener('pointerup', end);
 sheet.addEventListener('pointercancel', end);
+sheet.addEventListener('lostpointercapture', end);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') finishStroke(); });
 sheet.addEventListener('contextmenu', e => e.preventDefault());
 
 /* ---------- toolbar ---------- */
