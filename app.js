@@ -694,7 +694,9 @@ function clearPageSubs() { pageSubs.forEach(u => u()); pageSubs = []; }
 /* ---------- notices: the teacher's feedback and messages reach the student anywhere in the app ---------- */
 // The teacher writes a short list of recent notices on the student's own record (which the student can read).
 // The student's app watches that record and shows a banner with a 보러 가기 button, a sound and a vibration.
-const NOTICE_KEEP = 30, NOTICE_GAP = 90 * 1000;
+const NOTICE_KEEP = 60, NOTICE_GAP = 90 * 1000;
+let fbBase = null;
+const inkCount = arr => arr.reduce((t, x) => t + (x.erase ? 0 : 1), 0);
 function notifyStudent(st, refs, kind, book, pg, text) {
   if (!st || !refs || !refs.student || ownBook || !book || !pg) return;
   const live = (typeof students !== 'undefined' && students.find(x => x.id === st.id)) || st;
@@ -724,14 +726,14 @@ function startNotices() {
   stopNotices();
   if (!R || !R.student || ownBook) return;
   noticeKey = `dn-notice-${classId}-${R.student.id}`;
-  noticeSeen = lsGet(noticeKey) || {};
+  noticeSeen = lsGet(noticeKey) || {}; noticeHidden = null; inboxMore = false;
   noticeUnsub = R.student.onSnapshot(d => {
     if (!d.exists) return;
     noticeList = Array.isArray(d.data().notices) ? d.data().notices : [];
     checkNotices();
   }, () => {});
 }
-function stopNotices() { if (noticeUnsub) noticeUnsub(); noticeUnsub = null; noticeList = []; hideNotice(); }
+function stopNotices() { if (noticeUnsub) noticeUnsub(); noticeUnsub = null; noticeList = []; noticeKey = ''; hideNotice(); }
 const noticeId = x => x.nb + '/' + x.pg + '/' + x.kind;
 function isUnseen(x) { return x.at > (noticeSeen[noticeId(x)] || 0); }
 function markNoticeSeen(nbId, pgId) {
@@ -786,26 +788,50 @@ async function goToNotice(x) {
 }
 $('notice-go').addEventListener('click', () => goToNotice(noticeShown));
 // 확인 안 한 알림 on the bookshelf: one row per page (feedback and messages on the same page together)
-function renderInbox() {
-  const box = $('inbox-list'); box.textContent = '';
-  // one row per notice, newest first; opening the page clears every notice of that page
-  const list = noticeList.filter(isUnseen).sort((a, b) => b.at - a.at);
-  $('inbox').hidden = ownBook || mode !== 'student' || !list.length;
-  $('inbox-count').textContent = list.length;
-  for (const x of list) {
-    const row = document.createElement('button'); row.className = 'inbox-row';
-    const ico = document.createElement('span'); ico.className = 'ico' + (x.kind === 'chat' ? ' chat' : ''); ico.textContent = x.kind === 'chat' ? '💬' : '✎';
-    const what = document.createElement('span'); what.className = 'what';
-    const t = document.createElement('b'); t.textContent = `${x.nbName || '공책'} ${x.n ? x.n + '쪽' : ''}`.trim();
-    const d = document.createElement('span');
-    d.textContent = `${x.kind === 'chat' ? `메시지 "${x.text}"` : '선생님 피드백'} · ${ago(x.at)}`;
-    what.append(t, d);
-    const go = document.createElement('span'); go.className = 'go'; go.textContent = '보러 가기 →';
-    row.append(ico, what, go);
-    row.addEventListener('click', () => goToNotice(x));
-    box.append(row);
-  }
+// 받은 피드백 on the bookshelf: unread notices stand out; read ones sit behind 더보기, each can be removed
+// (removing only hides it on this tablet; the teacher's record stays)
+let inboxMore = false, noticeHidden = null;
+const noticeUid = x => noticeId(x) + '@' + x.at;
+function hiddenSet() {
+  if (!noticeHidden) noticeHidden = new Set(lsGet(noticeKey + '-hidden') || []);
+  return noticeHidden;
 }
+function noticeRow(x, read) {
+  const row = document.createElement('div'); row.className = 'inbox-row' + (read ? ' read' : '');
+  const main = document.createElement('button'); main.className = 'inbox-main';
+  const ico = document.createElement('span'); ico.className = 'ico' + (x.kind === 'chat' ? ' chat' : ''); ico.textContent = x.kind === 'chat' ? '💬' : '✎';
+  const what = document.createElement('span'); what.className = 'what';
+  const t = document.createElement('b'); t.textContent = `${x.nbName || '공책'} ${x.n ? x.n + '쪽' : ''}`.trim();
+  const d = document.createElement('span');
+  d.textContent = `${x.kind === 'chat' ? `메시지 "${x.text}"` : '선생님 피드백'} · ${ago(x.at)}`;
+  what.append(t, d);
+  const go = document.createElement('span'); go.className = 'go'; go.textContent = read ? '다시 보기 →' : '보러 가기 →';
+  main.append(ico, what, go);
+  main.addEventListener('click', () => goToNotice(x));
+  row.append(main);
+  if (read) {
+    const del = document.createElement('button'); del.className = 'inbox-del'; del.textContent = '지우기';
+    del.addEventListener('click', () => { const h = hiddenSet(); h.add(noticeUid(x)); lsPut(noticeKey + '-hidden', [...h].slice(-300)); renderInbox(); });
+    row.append(del);
+  }
+  return row;
+}
+function renderInbox() {
+  const box = $('inbox-list'), more = $('inbox-read'); box.textContent = ''; more.textContent = '';
+  const show = !ownBook && mode === 'student' && !!noticeKey;
+  const all = show ? noticeList.filter(x => !hiddenSet().has(noticeUid(x))).sort((a, b) => b.at - a.at) : [];
+  const unread = all.filter(isUnseen), read = all.filter(x => !isUnseen(x));
+  $('inbox').hidden = !all.length;
+  $('inbox').classList.toggle('calm', !unread.length);
+  $('inbox-count').textContent = unread.length; $('inbox-count').hidden = !unread.length;
+  $('inbox-none').hidden = unread.length > 0;
+  for (const x of unread) box.append(noticeRow(x, false));
+  $('inbox-more').hidden = !read.length;
+  $('inbox-more').textContent = inboxMore ? '읽은 피드백 접기' : `읽은 피드백 더보기 (${read.length})`;
+  more.hidden = !inboxMore;
+  if (inboxMore) for (const x of read) more.append(noticeRow(x, true));
+}
+$('inbox-more').addEventListener('click', () => { inboxMore = !inboxMore; renderInbox(); });
 
 
 async function openStudentNotebook(n) {
@@ -970,6 +996,7 @@ function showPage(i) {
       if (pages[pi] !== pg) return;
       const data = d.exists ? d.data() : {};
       strokes = (data.strokes || []).map(decode); seal = data.seal || '';
+      fbBase = { pg, ink: inkCount(strokes), seal };
       ready = true; renderSeal(); redraw();
     }).catch(() => { ready = true; });
   }
@@ -1466,7 +1493,11 @@ function flushSave() {
   if (who === 'teacher') {
     const body = { strokes: enc, seal, updated: Date.now() };
     const st = tStudent;
-    job = async () => { await refs.fb(book.id, pg.id).set(body); notifyStudent(st, refs, 'fb', book, pg); return sizeOf(enc); };
+    // tell the student only when something was added (new red-pen lines or a new stamp), not when erasing
+    const ink = inkCount(strokes), base = fbBase && fbBase.pg === pg ? fbBase : { ink: 0, seal: '' };
+    const added = ink > base.ink || (seal && seal !== base.seal);
+    fbBase = { pg, ink, seal };
+    job = async () => { await refs.fb(book.id, pg.id).set(body); if (added) notifyStudent(st, refs, 'fb', book, pg); return sizeOf(enc); };
   } else {
     const body = { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H, bg: pg.bg || 0, bgSrc: pg.bg ? (pg.bgSrc || '') : '' };
     book.updated = today(); book.pages = pages.length;

@@ -186,13 +186,20 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 @keyframes notice-in { from { transform: translate(-50%, -30px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
 .inbox { background: #fff8e6; border: 2px solid #f0b400; border-radius: 12px; padding: 12px 14px; display: grid; gap: 8px; max-width: 760px; color: #3a2a00; }
 .inbox h2 { font-size: 17px; }
-.inbox-row { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; width: 100%; text-align: left; background: #fff; border: 1px solid #f3d27a; border-radius: 10px; padding: 10px 12px; color: #3a2a00; }
+.inbox.calm { background: var(--bar); border: 1px solid var(--line); color: var(--fg); }
+#inbox-list, #inbox-read { display: grid; gap: 6px; }
+.inbox-row { display: flex; gap: 6px; align-items: stretch; }
+.inbox-main { flex: 1; min-width: 0; display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; text-align: left; background: #fff; border: 1px solid #f3d27a; border-radius: 10px; padding: 10px 12px; color: #3a2a00; }
+.inbox-row.read .inbox-main { background: var(--bar); border-color: var(--line); color: var(--fg); opacity: .85; }
 .inbox-row .ico { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; color: #fff; background: var(--seal); font-size: 17px; }
+.inbox-row.read .ico { filter: grayscale(.7); }
 .inbox-row .ico.chat { background: var(--accent); }
 .inbox-row .what { display: grid; gap: 2px; min-width: 0; }
 .inbox-row .what b { font-size: 15px; }
-.inbox-row .what span { font-size: 13px; color: #6b5600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inbox-row .what span { font-size: 13px; opacity: .8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .inbox-row .go { font-size: 13px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+.inbox-del { flex: none; font-size: 13px; }
+.inbox-morebtn { justify-self: start; font-size: 14px; }
 .news-tag { position: absolute; top: 8px; right: 8px; background: #ffe14d; color: #2a1f00; border: 2px solid #2a1f00; border-radius: 999px; padding: 3px 10px; font-size: 13px; font-weight: 800; box-shadow: 0 2px 6px rgba(0,0,0,.35); }
 #toast {
   position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
@@ -275,8 +282,11 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
   </div>
   <div class="body gutter">
     <div class="inbox" id="inbox" hidden>
-      <div class="row" style="justify-content:space-between"><h2 style="margin:0">확인 안 한 알림 <span class="badge" id="inbox-count">0</span></h2></div>
+      <h2 style="margin:0">받은 피드백 <span class="badge" id="inbox-count">0</span></h2>
+      <p class="small" id="inbox-none" style="margin:0">새로 온 피드백이 없어요.</p>
       <div id="inbox-list"></div>
+      <button id="inbox-more" class="inbox-morebtn" hidden>읽은 피드백 더보기</button>
+      <div id="inbox-read" hidden></div>
     </div>
     <div>
       <div class="row" style="justify-content:space-between;margin-bottom:10px"><h2 style="margin:0">내 공책</h2><button id="del-mode" aria-pressed="false">공책 지우기</button></div>
@@ -490,7 +500,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 </div>
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=26"></script>
-<script type="module" src="app.js?v=26"></script>
+<script src="config.js?v=27"></script>
+<script type="module" src="app.js?v=27"></script>
 </body>
 </html>
