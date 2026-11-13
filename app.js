@@ -172,7 +172,6 @@ function ownRefs(uid) {
 function setShelfChrome() {
   document.querySelectorAll('#shelf .logout').forEach(b => { b.hidden = ownBook; });
   $('shelf-home').hidden = !ownBook;
-  $('notice-sound').hidden = ownBook;
   $('chat-open').hidden = ownBook;
 }
 async function enterOwnShelf() {
@@ -223,6 +222,7 @@ async function deleteNotebook(n, b, tag) {
   } catch (err) { b.disabled = false; tag.textContent = '지우지 못했어요'; }
 }
 function renderShelf() {
+  renderInbox();
   const box = $('books'); box.textContent = '';
   $('shelf-loading').hidden = true;
   $('shelf-empty').hidden = notebooks.length > 0;
@@ -708,7 +708,6 @@ function notifyStudent(st, refs, kind, book, pg, text) {
   refs.student.update({ notices }).catch(() => {});
 }
 let noticeUnsub = null, noticeSeen = {}, noticeKey = '', noticeList = [], noticeShown = null;
-let noticeSound = lsGet('dn-notice-sound') !== false;
 function startNotices() {
   stopNotices();
   if (!R || !R.student || ownBook) return;
@@ -740,8 +739,8 @@ function checkNotices() {
     const here = noticeList.filter(x => x.nb === nb.id && x.pg === pages[pi].id && isUnseen(x) && (x.kind === 'fb' || !$('chat').hidden));
     if (here.length) markNoticeSeen(nb.id, pages[pi].id);
   }
-  const fresh = noticeList.filter(isUnseen).sort((a, b) => b.at - a.at);
   if (!$('shelf').hidden) renderShelf();
+  const fresh = noticeList.filter(x => isUnseen(x) && !noticeDismissed.has(noticeId(x) + '@' + x.at)).sort((a, b) => b.at - a.at);
   if (!fresh.length) { hideNotice(); return; }
   const top = fresh[0];
   if (noticeShown && noticeShown.at === top.at) return;
@@ -755,41 +754,58 @@ function showNotice(x, count) {
     : `선생님이 ${where}에 피드백을 남겼어요`;
   $('notice-more').textContent = count > 1 ? `새 소식 ${count}개` : '';
   $('notice').hidden = false;
-  if (noticeSound) beep();
   try { if (navigator.vibrate) navigator.vibrate([120, 80, 120]); } catch (e) {}
 }
 function hideNotice() { noticeShown = null; const el = $('notice'); if (el) el.hidden = true; }
-let audioCtx = null;
-document.addEventListener('pointerdown', () => { try { if (!audioCtx && window.AudioContext) audioCtx = new AudioContext(); if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); } catch (e) {} }, { capture: true, passive: true });
-function beep() {
-  try {
-    if (!audioCtx) return;
-    const t = audioCtx.currentTime;
-    for (const [f, d] of [[880, 0], [1320, 0.16]]) {
-      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-      o.frequency.value = f; o.type = 'sine';
-      g.gain.setValueAtTime(0.0001, t + d); g.gain.exponentialRampToValueAtTime(0.25, t + d + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.22);
-      o.connect(g).connect(audioCtx.destination); o.start(t + d); o.stop(t + d + 0.25);
-    }
-  } catch (e) {}
-}
-$('notice-close').addEventListener('click', () => { const x = noticeShown; if (x) { noticeSeen[noticeId(x)] = x.at; lsPut(noticeKey, noticeSeen); } hideNotice(); checkNotices(); });
-$('notice-go').addEventListener('click', async () => {
-  const x = noticeShown; if (!x) return;
+// 닫기 only puts the banner away; the notice stays in 확인 안 한 알림 on the bookshelf until it is opened
+const noticeDismissed = new Set();
+$('notice-close').addEventListener('click', () => { for (const x of noticeList) if (isUnseen(x)) noticeDismissed.add(noticeId(x) + '@' + x.at); hideNotice(); });
+async function goToNotice(x) {
+  if (!x) return;
   hideNotice();
   let n = notebooks.find(b => b.id === x.nb);
   if (!n) { try { notebooks = await store.listNotebooks(); } catch (e) {} n = notebooks.find(b => b.id === x.nb); }
-  if (!n) { toast('그 공책을 찾지 못했어요'); return; }
+  if (!n) { markNoticeSeen(x.nb, x.pg); toast('그 공책을 찾지 못했어요. 지워진 공책일 수 있어요'); return; }
   if (!(nb && nb.id === n.id && !$('book').hidden)) await openStudentNotebook(n);
   const i = pages.findIndex(p => p.id === x.pg);
-  if (i >= 0 && i !== pi) { await flushSave(); showPage(i); }
+  if (i < 0) toast('그 쪽을 찾지 못했어요. 지워진 쪽일 수 있어요');
+  else if (i !== pi) { await flushSave(); showPage(i); }
   if (x.kind === 'chat') { $('chat').hidden = false; markChatRead(); renderChat(); }
   markNoticeSeen(x.nb, x.pg);
   checkNotices();
+}
+$('notice-go').addEventListener('click', () => goToNotice(noticeShown));
+// 확인 안 한 알림 on the bookshelf: one row per page (feedback and messages on the same page together)
+function renderInbox() {
+  const box = $('inbox-list'); box.textContent = '';
+  const groups = new Map();
+  for (const x of noticeList.filter(isUnseen).sort((a, b) => b.at - a.at)) {
+    const k = x.nb + '/' + x.pg;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(x);
+  }
+  $('inbox').hidden = ownBook || mode !== 'student' || !groups.size;
+  $('inbox-count').textContent = groups.size;
+  for (const list of groups.values()) {
+    const x = list[0], hasFb = list.some(y => y.kind === 'fb'), msg = list.find(y => y.kind === 'chat');
+    const row = document.createElement('button'); row.className = 'inbox-row';
+    const ico = document.createElement('span'); ico.className = 'ico' + (hasFb ? '' : ' chat'); ico.textContent = hasFb ? '✎' : '💬';
+    const what = document.createElement('span'); what.className = 'what';
+    const t = document.createElement('b'); t.textContent = `${x.nbName || '공책'} ${x.n ? x.n + '쪽' : ''}`.trim();
+    const d = document.createElement('span');
+    const kinds = [hasFb ? '선생님 피드백' : '', msg ? `메시지 "${msg.text}"` : ''].filter(Boolean).join(' · ');
+    d.textContent = `${kinds} · ${ago(x.at)}`;
+    what.append(t, d);
+    const go = document.createElement('span'); go.className = 'go'; go.textContent = '보러 가기 →';
+    row.append(ico, what, go);
+    row.addEventListener('click', () => goToNotice(msg && !hasFb ? msg : (msg || x)));
+    box.append(row);
+  }
+}
+$('inbox-all').addEventListener('click', () => {
+  for (const x of noticeList) if (isUnseen(x)) noticeSeen[noticeId(x)] = x.at;
+  lsPut(noticeKey, noticeSeen); hideNotice(); renderShelf();
 });
-function setSoundBtn() { const b = $('notice-sound'); b.textContent = noticeSound ? '알림 소리 켬' : '알림 소리 끔'; b.setAttribute('aria-pressed', String(noticeSound)); }
-$('notice-sound').addEventListener('click', () => { noticeSound = !noticeSound; lsPut('dn-notice-sound', noticeSound); setSoundBtn(); if (noticeSound) beep(); });
-setSoundBtn();
 
 async function openStudentNotebook(n) {
   await flushSave();

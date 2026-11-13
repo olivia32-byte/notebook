@@ -184,6 +184,15 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 #notice .notice-body { flex: 1 1 220px; display: grid; gap: 2px; font-size: 16px; }
 #notice .small { color: #6b5600; }
 @keyframes notice-in { from { transform: translate(-50%, -30px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
+.inbox { background: #fff8e6; border: 2px solid #f0b400; border-radius: 12px; padding: 12px 14px; display: grid; gap: 8px; max-width: 760px; color: #3a2a00; }
+.inbox h2 { font-size: 17px; }
+.inbox-row { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; width: 100%; text-align: left; background: #fff; border: 1px solid #f3d27a; border-radius: 10px; padding: 10px 12px; color: #3a2a00; }
+.inbox-row .ico { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; color: #fff; background: var(--seal); font-size: 17px; }
+.inbox-row .ico.chat { background: var(--accent); }
+.inbox-row .what { display: grid; gap: 2px; min-width: 0; }
+.inbox-row .what b { font-size: 15px; }
+.inbox-row .what span { font-size: 13px; color: #6b5600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inbox-row .go { font-size: 13px; font-weight: 600; color: var(--accent); white-space: nowrap; }
 .news-tag { position: absolute; top: 8px; right: 8px; background: var(--danger); color: #fff; border-radius: 999px; padding: 3px 9px; font-size: 12px; font-weight: 700; box-shadow: 0 0 0 2px #fff; }
 #toast {
   position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
@@ -261,11 +270,14 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 <section id="shelf" class="scroll" hidden>
   <div class="topbar gutter">
     <div class="grow"><h1 id="shelf-title">내 공책장</h1><p id="shelf-sub">과목마다 공책을 따로 만들어 차곡차곡 모아요</p></div>
-    <button id="notice-sound" aria-pressed="true">알림 소리 켬</button>
     <button id="shelf-home" hidden>← 내 반 목록</button>
     <button class="logout">로그아웃</button>
   </div>
   <div class="body gutter">
+    <div class="inbox" id="inbox" hidden>
+      <div class="row" style="justify-content:space-between"><h2 style="margin:0">확인 안 한 알림 <span class="badge" id="inbox-count">0</span></h2><button id="inbox-all">모두 확인</button></div>
+      <div id="inbox-list"></div>
+    </div>
     <div>
       <div class="row" style="justify-content:space-between;margin-bottom:10px"><h2 style="margin:0">내 공책</h2><button id="del-mode" aria-pressed="false">공책 지우기</button></div>
       <div class="books" id="books"></div>
@@ -478,7 +490,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 </div>
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=22"></script>
-<script type="module" src="app.js?v=22"></script>
+<script src="config.js?v=23"></script>
+<script type="module" src="app.js?v=23"></script>
 </body>
 </html>
