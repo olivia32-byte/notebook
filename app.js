@@ -89,7 +89,7 @@ function classRefs(code, sid) {
   };
 }
 const store = {
-  async listNotebooks() { const s = await R.books.get(); return s.docs.map(d => ({ ...d.data(), id: d.id })); },
+  async listNotebooks() { const s = await R.books.get(); return s.docs.map(d => ({ ...d.data(), id: d.id })).filter(n => !n.deletedAt); },
   async putNotebook(nb) { const { id, ...b } = nb; await R.books.doc(id).set(b); },
   // later saves only touch the page count and date, so a name the teacher changed is not written back over
   async touchNotebook(nb) {
@@ -215,13 +215,11 @@ $('del-mode').addEventListener('click', () => {
 async function deleteNotebook(n, b, tag) {
   b.disabled = true; tag.textContent = '지우는 중…';
   try {
-    // pages, their background pictures, then the notebook itself
-    const all = await R.pages(n.id).get();
-    for (const d of all.docs) await R.pages(n.id).doc(d.id).delete();
-    await R.books.doc(n.id).delete();
+    // kept for 30 days: "지운 공책 되살리기" brings it back
+    await R.books.doc(n.id).update({ deletedAt: Date.now() });
     notebooks = notebooks.filter(x => x.id !== n.id);
     if (studentInfo && studentInfo.current && studentInfo.current.nb === n.id) touchStudent({ current: null, updated: Date.now() });
-    toast(`"${n.name}"을(를) 지웠어요`);
+    toast(`"${n.name}"을(를) 지웠어요. 30일 안에는 "지운 공책 되살리기"로 되살릴 수 있어요`);
     renderShelf();
   } catch (err) { b.disabled = false; tag.textContent = '지우지 못했어요'; }
 }
@@ -497,7 +495,7 @@ async function loadCollection() {
   const id = ++colLoadId;
   $('col-status').textContent = '공책을 모으는 중…';
   const got = await Promise.all(students.map(st => classRefs(classId, st.id).books.get()
-    .then(q => [st.id, q.docs.map(d => ({ ...d.data(), id: d.id }))]).catch(() => [st.id, []])));
+    .then(q => [st.id, q.docs.map(d => ({ ...d.data(), id: d.id })).filter(n => !n.deletedAt)]).catch(() => [st.id, []])));
   if (id !== colLoadId) return;
   colBooks = Object.fromEntries(got);
   try { colHandouts = (await db.collection(`classes/${classId}/handouts`).get()).docs.map(d => ({ ...d.data(), id: d.id })).sort((a, b) => (b.created || 0) - (a.created || 0)); }
@@ -936,7 +934,7 @@ async function openTeacherNotebook(st, target) {
   show('book'); updateBrowseBar();
   $('book-name').textContent = `${st.num}번 ${st.name || ''}`;
   setSave('불러오는 중…');
-  try { tNotebooks = (await R.books.get()).docs.map(d => ({ ...d.data(), id: d.id })); } catch (e) { tNotebooks = []; }
+  try { tNotebooks = (await R.books.get()).docs.map(d => ({ ...d.data(), id: d.id })).filter(n => !n.deletedAt); } catch (e) { tNotebooks = []; }
   const sel = $('t-notebook'); sel.textContent = '';
   for (const n of tNotebooks) { const o = document.createElement('option'); o.value = n.id; o.textContent = n.name; sel.append(o); }
   const cur = target || st.current;
@@ -1002,17 +1000,13 @@ $('t-delete').addEventListener('click', async () => {
   const book = nb, st = tStudent, refs = R;
   try {
     dirty = false; clearTimeout(saveTimer); clearPageSubs();
-    const all = await refs.pages(book.id).get();
-    for (const d of all.docs) {
-      if (!d.id.endsWith('-bg')) await refs.fb(book.id, d.id).delete().catch(() => {});
-      await refs.pages(book.id).doc(d.id).delete();
-    }
-    await refs.books.doc(book.id).delete();
+    // kept for 30 days (pages, pictures, feedback and chat untouched): "지운 공책 되살리기" brings it back
+    await refs.books.doc(book.id).update({ deletedAt: Date.now() });
     if (st.current && st.current.nb === book.id) await refs.student.update({ current: null }).catch(() => {});
     tNotebooks = tNotebooks.filter(x => x.id !== book.id);
     if (colBooks[st.id]) colBooks[st.id] = colBooks[st.id].filter(x => x.id !== book.id);
     const o = [...$('t-notebook').options].find(x => x.value === book.id); if (o) o.remove();
-    toast(`${st.num}번 "${book.name}"을(를) 지웠어요`);
+    toast(`${st.num}번 "${book.name}"을(를) 지웠어요. 30일 안에는 "지운 공책 되살리기"로 되살릴 수 있어요`);
     if (tNotebooks[0]) { $('t-notebook').value = tNotebooks[0].id; await loadTeacherNotebook(tNotebooks[0], null); }
     else { pages = []; nb = null; resize(); showEmptyTeacher(); }
   } catch (err) { toast('지우지 못했어요. ' + errText(err)); }
@@ -1721,21 +1715,34 @@ async function restGet(path, readTime, token) {
   if (!r.ok) throw new Error('read ' + r.status);
   const d = await r.json(); return fsFields(d.fields || {});
 }
+const NB_KEEP_DAYS = 30;
+// a notebook deleted more than 30 days ago is removed for good
+async function purgeNotebook(bookPath) {
+  const pagesC = db.collection(`${bookPath}/pages`);
+  for (const d of (await pagesC.get()).docs) {
+    if (!d.id.endsWith('-bg')) await db.doc(`${bookPath}/pages/${d.id}/notes/teacher`).delete().catch(() => {});
+    await db.doc(`${bookPath}/pages/${d.id}`).delete();
+  }
+  await db.doc(bookPath).delete();
+}
 const RECOVER_MIN = [1, 2, 3, 5, 8, 12, 16, 21, 27, 33, 40, 47, 53, 58];
 async function findDeleted() {
-  const token = backend.idToken ? await backend.idToken() : null;
-  if (!token) throw new Error('sign-in');
+  const token = backend.idToken ? await backend.idToken().catch(() => null) : null;
   const now = Date.now();
   const places = students.map(st => ({ label: `${st.num}번 ${st.name || ''}`, path: `classes/${classId}/students/${st.id}/notebooks` }));
   if (me && me.uid) places.push({ label: '선생님 공책장', path: `teachers/${me.uid}/notebooks` });
   const found = [];
   let done = 0;
   await Promise.all(places.map(async pl => {
-    let nowIds;
-    try { nowIds = new Set((await db.collection(pl.path).get()).docs.map(d => d.id)); } catch (e) { nowIds = null; }
+    let nowIds, docs = [];
+    try { docs = (await db.collection(pl.path).get()).docs.map(d => ({ id: d.id, data: d.data() })); nowIds = new Set(docs.map(d => d.id)); } catch (e) { nowIds = null; }
     if (!nowIds) return;
+    for (const d of docs) if (d.data.deletedAt) {
+      if (now - d.data.deletedAt > NB_KEEP_DAYS * 86400000) purgeNotebook(`${pl.path}/${d.id}`).catch(() => {});
+      else found.push({ ...pl, id: d.id, data: d.data, soft: true });
+    }
     const seen = new Set();
-    for (const m of RECOVER_MIN) {
+    if (token) for (const m of RECOVER_MIN) {
       const at = new Date(now - m * 60000).toISOString();
       let list = [];
       try { list = await restList(pl.path, at, token); } catch (e) { continue; }
@@ -1747,6 +1754,7 @@ async function findDeleted() {
 }
 async function restoreNotebook(f, token) {
   const bookPath = `${f.path}/${f.id}`;
+  if (f.soft) { await db.doc(bookPath).update({ deletedAt: 0 }); return f.data.pages || 0; }
   const pagesList = await restList(`${bookPath}/pages`, f.at, token);
   let i = 0;
   for (const p of pagesList) {
@@ -1764,18 +1772,19 @@ async function restoreNotebook(f, token) {
 $('recover').addEventListener('click', async () => {
   const box = $('recover-box'), list = $('recover-list');
   box.hidden = false; list.textContent = ''; $('recover').disabled = true;
-  $('recover-status').textContent = '지난 1시간 동안의 공책을 찾는 중…';
+  $('recover-status').textContent = '지운 공책을 찾는 중…';
   try {
     const { found, token } = await findDeleted();
-    if (!found.length) { $('recover-status').textContent = '지난 1시간 안에 지운 공책이 없어요. (1시간이 지나면 찾을 수 없어요)'; return; }
+    if (!found.length) { $('recover-status').textContent = '되살릴 수 있는 지운 공책이 없어요.'; return; }
     $('recover-status').textContent = `지운 공책 ${found.length}권을 찾았어요. 되살릴 공책의 버튼을 눌러 주세요.`;
     for (const f of found) {
       const row = document.createElement('div'); row.className = 'row';
-      const t = document.createElement('span'); t.textContent = `${f.label} · "${f.data.name || '공책'}" (${f.data.pages || '?'}쪽 · 약 ${f.mins}분 전 모습)`;
+      const when = f.soft ? `${fmtDate(new Date(f.data.deletedAt).toISOString())}에 지움` : `약 ${f.mins}분 전 모습`;
+      const t = document.createElement('span'); t.textContent = `${f.label} · "${f.data.name || '공책'}" (${f.data.pages || '?'}쪽 · ${when})`;
       const b = document.createElement('button'); b.className = 'primary'; b.textContent = '되살리기';
       b.addEventListener('click', async () => {
         b.disabled = true; b.textContent = '되살리는 중…';
-        try { const n = await restoreNotebook(f, await backend.idToken()); b.textContent = `되살림 (${n}쪽)`; toast(`"${f.data.name}"을(를) 되살렸어요`); loadCollection && colMode && loadCollection(); }
+        try { const n = await restoreNotebook(f, f.soft ? null : await backend.idToken()); b.textContent = `되살림 (${n}쪽)`; toast(`"${f.data.name}"을(를) 되살렸어요`); loadCollection && colMode && loadCollection(); }
         catch (e) { b.disabled = false; b.textContent = '다시 시도'; toast('되살리지 못했어요. ' + (e.message || errText(e))); }
       });
       row.append(t, b); list.append(row);
@@ -1835,7 +1844,7 @@ $('handout-form').addEventListener('submit', async e => {
       status(`학생 공책에 넣는 중 ${done + failed + 1} / ${targets.length}`);
       try {
         const refs = classRefs(classId, st.id);
-        const books = (await refs.books.get()).docs.map(d => ({ ...d.data(), id: d.id }));
+        const books = (await refs.books.get()).docs.map(d => ({ ...d.data(), id: d.id })).filter(n => !n.deletedAt);
         let book = books.find(b => b.name === nbName);
         const now = today();
         if (!book) book = { id: newId(), name: nbName, color: '#4b5963', paper: '', created: now, updated: now, pages: 0 };
