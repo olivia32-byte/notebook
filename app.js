@@ -66,7 +66,7 @@ if (!window.__TEST_BACKEND && (!window.FIREBASE_CONFIG || !window.FIREBASE_CONFI
 }
 let backend;
 try {
-  backend = window.__TEST_BACKEND || await (await import('./backend.js')).createBackend(window.FIREBASE_CONFIG);
+  backend = window.__TEST_BACKEND || await (await import('./backend.js?v=40')).createBackend(window.FIREBASE_CONFIG);
 } catch (e) {
   $('boot').textContent = '서버에 연결하지 못했어요. 인터넷 연결을 확인하고 다시 열어 주세요.';
   throw e;
