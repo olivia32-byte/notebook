@@ -174,6 +174,9 @@ function setShelfChrome() {
   document.querySelectorAll('#shelf .logout').forEach(b => { b.hidden = ownBook; });
   $('shelf-home').hidden = !ownBook;
   $('chat-open').hidden = ownBook;
+  // only the teacher deletes notebooks (their own here, students' from the class); students cannot
+  $('del-mode').hidden = !ownBook;
+  if (!ownBook && deleting) { deleting = false; $('del-mode').textContent = '공책 지우기'; $('del-mode').setAttribute('aria-pressed', 'false'); }
 }
 async function enterOwnShelf() {
   stopClass(); stopNotices();
@@ -480,7 +483,7 @@ setTimeout(setBoardView, 0);
 /* ---------- after class: one notebook name, every student ---------- */
 // The teacher picks a notebook name (e.g. "수학") and a page; every student's copy is shown side by side.
 // Tapping one opens it for feedback, and 이전/다음 학생 walks through the class without coming back here.
-let colMode = false, colBooks = {}, colTiles = {}, colItems = [], browse = null, colLoadId = 0;
+let colMode = false, colBooks = {}, colHandouts = [], colTiles = {}, colItems = [], browse = null, colLoadId = 0;
 const normName = x => (x || '').trim();
 function setClassTab(col) {
   colMode = col;
@@ -497,6 +500,9 @@ async function loadCollection() {
     .then(q => [st.id, q.docs.map(d => ({ ...d.data(), id: d.id }))]).catch(() => [st.id, []])));
   if (id !== colLoadId) return;
   colBooks = Object.fromEntries(got);
+  try { colHandouts = (await db.collection(`classes/${classId}/handouts`).get()).docs.map(d => ({ ...d.data(), id: d.id })).sort((a, b) => (b.created || 0) - (a.created || 0)); }
+  catch (e) { colHandouts = []; }
+  if (id !== colLoadId) return;
   const count = {};
   for (const list of Object.values(colBooks)) new Set(list.map(n => normName(n.name))).forEach(nm => { if (nm) count[nm] = (count[nm] || 0) + 1; });
   const names = Object.keys(count).sort((a, b) => count[b] - count[a] || a.localeCompare(b, 'ko'));
@@ -521,6 +527,18 @@ function renderCollection() {
   ps.textContent = '';
   const opt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; ps.append(o); };
   opt('last', '마지막 쪽'); for (let i = 1; i <= most; i++) opt(String(i), i + '쪽');
+  // a worksheet that was handed out sits at a different page number in each notebook (some children
+  // added pages in between): pick it by worksheet instead, and every child's copy of it is shown
+  const hs = colHandouts.filter(h => normName(h.nbName) === nm);
+  if (hs.length) {
+    const grp = document.createElement('optgroup'); grp.label = '나눠 준 학습지로 모아 보기';
+    for (const h of hs.slice(0, 15)) for (let i = 0; i < (h.pages || 1); i++) {
+      const o = document.createElement('option'); o.value = `h:${h.id}:${i}`;
+      o.textContent = `${String(h.title || '학습지').replace(/\.[a-z0-9]+$/i, '')}${h.pages > 1 ? ` ${i + 1}쪽` : ''} (${fmtDate(new Date(h.created).toISOString())})`;
+      grp.append(o);
+    }
+    ps.append(grp);
+  }
   ps.value = [...ps.options].some(o => o.value === keep) ? keep : 'last';
   if (!nm) return;
   colItems.forEach((it, i) => {
@@ -545,6 +563,11 @@ function layoutCollection() {
 }
 async function colPage(st, nbId) {
   const ref = classRefs(classId, st.id).pages(nbId), want = $('col-page').value;
+  if (want.startsWith('h:')) {
+    const [, hid, i] = want.split(':');
+    const q = await ref.where('bgSrc', '==', `classes/${classId}/handouts/${hid}/pages/p${i}`).get();
+    return q.docs.map(d => ({ ...d.data(), id: d.id })).filter(d => typeof d.n === 'number').sort((a, b) => a.n - b.n)[0] || null;
+  }
   const q = await (want === 'last' ? ref.orderBy('n', 'desc').limit(1) : ref.where('n', '==', +want).limit(1)).get();
   const docs = q.docs.map(d => ({ ...d.data(), id: d.id })).filter(d => typeof d.n === 'number');
   return docs.sort((a, b) => b.n - a.n)[0] || null;
@@ -556,7 +579,7 @@ async function loadColTile(it) {
     if (colTiles[it.st.id] !== t) return;
     it.pg = pg;
     t.data = pg;
-    t.where.textContent = pg ? `${pg.n}쪽 · ${fmtDate(pg.created)}` : (want === 'last' ? '빈 공책' : `${want}쪽이 없어요`);
+    t.where.textContent = pg ? `${pg.n}쪽 · ${fmtDate(pg.created)}` : (want === 'last' ? '빈 공책' : want.startsWith('h:') ? '이 학습지가 없어요' : `${want}쪽이 없어요`);
     paintThumb(t.cv, t.el, pg);
     if (!pg) return;
     const fb = await classRefs(classId, it.st.id).fb(it.nb.id, pg.id).get();
@@ -987,7 +1010,7 @@ function setEditorChrome() {
   $('back').textContent = t ? '← 우리 반' : '← 공책장';
   $('teacher-bar').hidden = !t;
   $('add-page').hidden = t;
-  $('del-page').hidden = t;
+  $('del-page').hidden = false;
   $('trash-btn').hidden = true; $('trash').hidden = true;
   $('paper').hidden = t;
   $('bg-btn').hidden = t;
@@ -1141,7 +1164,7 @@ let trash = [];
 async function refreshTrash() {
   trash = [];
   $('trash-btn').hidden = true;
-  if (mode !== 'student' || !nb) return;
+  if (!nb) return;
   const book = nb;
   try {
     const q = await R.pages(book.id).orderBy('deletedAt').get();
