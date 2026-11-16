@@ -74,5 +74,7 @@ export async function createBackend(config) {
       return uid;
     },
     logout() { return fa.signOut(auth); },
+    // for reading an earlier state of the database (deleted notebooks can be read back for about an hour)
+    async idToken() { return auth.currentUser ? auth.currentUser.getIdToken() : null; },
   };
 }

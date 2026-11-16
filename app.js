@@ -1683,6 +1683,108 @@ async function exportPdf() {
 $('ex-png').addEventListener('click', exportPage);
 $('ex-pdf').addEventListener('click', exportPdf);
 
+/* ---------- bring back a notebook deleted within the last hour ---------- */
+// Firestore keeps every earlier version of the data readable for one hour. The REST interface can read
+// the class "as it was" at a time in that hour (with the teacher's own sign-in, under the same rules);
+// a notebook found then but missing now is written back with all its pages, pictures, feedback and chat.
+const FS_REST = () => `https://firestore.googleapis.com/v1/projects/${window.FIREBASE_CONFIG.projectId}/databases/(default)/documents`;
+function fsValue(v) {
+  if ('stringValue' in v) return v.stringValue;
+  if ('integerValue' in v) return Number(v.integerValue);
+  if ('doubleValue' in v) return Number(v.doubleValue);
+  if ('booleanValue' in v) return v.booleanValue;
+  if ('nullValue' in v) return null;
+  if ('timestampValue' in v) return v.timestampValue;
+  if ('arrayValue' in v) return (v.arrayValue.values || []).map(fsValue);
+  if ('mapValue' in v) return fsFields(v.mapValue.fields || {});
+  if ('bytesValue' in v) return v.bytesValue;
+  if ('referenceValue' in v) return v.referenceValue;
+  if ('geoPointValue' in v) return v.geoPointValue;
+  return null;
+}
+function fsFields(f) { const o = {}; for (const k of Object.keys(f)) o[k] = fsValue(f[k]); return o; }
+async function restList(path, readTime, token) {
+  const out = []; let next = '';
+  do {
+    const u = `${FS_REST()}/${path}?pageSize=100&readTime=${encodeURIComponent(readTime)}${next ? '&pageToken=' + encodeURIComponent(next) : ''}`;
+    const r = await fetch(u, { headers: { Authorization: 'Bearer ' + token } });
+    if (!r.ok) throw new Error('read ' + r.status);
+    const j = await r.json();
+    for (const d of j.documents || []) out.push({ id: d.name.split('/').pop(), data: fsFields(d.fields || {}) });
+    next = j.nextPageToken || '';
+  } while (next);
+  return out;
+}
+async function restGet(path, readTime, token) {
+  const r = await fetch(`${FS_REST()}/${path}?readTime=${encodeURIComponent(readTime)}`, { headers: { Authorization: 'Bearer ' + token } });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error('read ' + r.status);
+  const d = await r.json(); return fsFields(d.fields || {});
+}
+const RECOVER_MIN = [1, 2, 3, 5, 8, 12, 16, 21, 27, 33, 40, 47, 53, 58];
+async function findDeleted() {
+  const token = backend.idToken ? await backend.idToken() : null;
+  if (!token) throw new Error('sign-in');
+  const now = Date.now();
+  const places = students.map(st => ({ label: `${st.num}번 ${st.name || ''}`, path: `classes/${classId}/students/${st.id}/notebooks` }));
+  if (me && me.uid) places.push({ label: '선생님 공책장', path: `teachers/${me.uid}/notebooks` });
+  const found = [];
+  let done = 0;
+  await Promise.all(places.map(async pl => {
+    let nowIds;
+    try { nowIds = new Set((await db.collection(pl.path).get()).docs.map(d => d.id)); } catch (e) { nowIds = null; }
+    if (!nowIds) return;
+    const seen = new Set();
+    for (const m of RECOVER_MIN) {
+      const at = new Date(now - m * 60000).toISOString();
+      let list = [];
+      try { list = await restList(pl.path, at, token); } catch (e) { continue; }
+      for (const b of list) if (!nowIds.has(b.id) && !seen.has(b.id)) { seen.add(b.id); found.push({ ...pl, id: b.id, data: b.data, at, mins: m }); }
+    }
+    done++; $('recover-status').textContent = `찾는 중… ${done} / ${places.length}`;
+  }));
+  return { found, token };
+}
+async function restoreNotebook(f, token) {
+  const bookPath = `${f.path}/${f.id}`;
+  const pagesList = await restList(`${bookPath}/pages`, f.at, token);
+  let i = 0;
+  for (const p of pagesList) {
+    $('recover-status').textContent = `되살리는 중… ${++i} / ${pagesList.length}쪽`;
+    await db.doc(`${bookPath}/pages/${p.id}`).set(p.data);
+    if (p.id.endsWith('-bg')) continue;
+    const fb = await restGet(`${bookPath}/pages/${p.id}/notes/teacher`, f.at, token).catch(() => null);
+    if (fb) await db.doc(`${bookPath}/pages/${p.id}/notes/teacher`).set(fb);
+    const chat = await restList(`${bookPath}/pages/${p.id}/chat`, f.at, token).catch(() => []);
+    for (const m of chat) await db.doc(`${bookPath}/pages/${p.id}/chat/${m.id}`).set(m.data);
+  }
+  await db.doc(bookPath).set(f.data);
+  return pagesList.filter(p => typeof p.data.n === 'number').length;
+}
+$('recover').addEventListener('click', async () => {
+  const box = $('recover-box'), list = $('recover-list');
+  box.hidden = false; list.textContent = ''; $('recover').disabled = true;
+  $('recover-status').textContent = '지난 1시간 동안의 공책을 찾는 중…';
+  try {
+    const { found, token } = await findDeleted();
+    if (!found.length) { $('recover-status').textContent = '지난 1시간 안에 지운 공책이 없어요. (1시간이 지나면 찾을 수 없어요)'; return; }
+    $('recover-status').textContent = `지운 공책 ${found.length}권을 찾았어요. 되살릴 공책의 버튼을 눌러 주세요.`;
+    for (const f of found) {
+      const row = document.createElement('div'); row.className = 'row';
+      const t = document.createElement('span'); t.textContent = `${f.label} · "${f.data.name || '공책'}" (${f.data.pages || '?'}쪽 · 약 ${f.mins}분 전 모습)`;
+      const b = document.createElement('button'); b.className = 'primary'; b.textContent = '되살리기';
+      b.addEventListener('click', async () => {
+        b.disabled = true; b.textContent = '되살리는 중…';
+        try { const n = await restoreNotebook(f, await backend.idToken()); b.textContent = `되살림 (${n}쪽)`; toast(`"${f.data.name}"을(를) 되살렸어요`); loadCollection && colMode && loadCollection(); }
+        catch (e) { b.disabled = false; b.textContent = '다시 시도'; toast('되살리지 못했어요. ' + (e.message || errText(e))); }
+      });
+      row.append(t, b); list.append(row);
+    }
+  } catch (e) { $('recover-status').textContent = '찾지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요. (' + (e.message || '') + ')'; }
+  finally { $('recover').disabled = false; }
+});
+$('recover-close').addEventListener('click', () => { $('recover-box').hidden = true; });
+
 /* ---------- handouts: one worksheet into many students' notebooks ---------- */
 let membersSynced = '';
 async function syncMembers() {

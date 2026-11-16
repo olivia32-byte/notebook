@@ -356,6 +356,12 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
     </div>
     <span class="small">반 코드</span><span class="code-box" id="class-code"></span>
     <button id="to-classes">내 반 목록</button>
+    <button id="recover">방금 지운 공책 되살리기</button>
+  </div>
+  <div class="gutter" id="recover-box" hidden style="padding-block:8px">
+    <div class="row" style="justify-content:space-between"><b>지운 공책 찾기 (지운 지 1시간 안)</b><button id="recover-close">닫기</button></div>
+    <p class="small" id="recover-status" style="margin:6px 0"></p>
+    <div id="recover-list" style="display:flex;flex-direction:column;gap:6px"></div>
   </div>
   <div class="kids" id="kids"></div>
   <div class="col-bar gutter" id="col-bar" hidden>
@@ -524,7 +530,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 <div id="busy" hidden><div class="busy-box"><div class="spinner"></div><b id="busy-text">잠시만 기다려 주세요…</b><span class="small">끝날 때까지 공책을 넘기거나 나가지 말아 주세요.</span></div></div>
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=39"></script>
-<script type="module" src="app.js?v=39"></script>
+<script src="config.js?v=40"></script>
+<script type="module" src="app.js?v=40"></script>
 </body>
 </html>
