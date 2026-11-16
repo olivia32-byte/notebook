@@ -513,6 +513,17 @@ async function loadCollection() {
   $('col-status').textContent = names.length ? '' : '아직 학생들이 만든 공책이 없어요.';
   renderCollection();
 }
+const handoutTitle = h => String(h.title || '학습지').replace(/\.[a-z0-9]+$/i, '').trim();
+function colHandoutGroups(nm) {
+  const by = new Map();
+  for (const h of colHandouts) {
+    if (normName(h.nbName) !== nm) continue;
+    const t = handoutTitle(h);
+    if (!by.has(t)) by.set(t, { title: t, ids: [], pages: 0 });
+    const g = by.get(t); g.ids.push(h.id); g.pages = Math.max(g.pages, h.pages || 1);
+  }
+  return [...by.values()];
+}
 function colPick(st) {
   // a student may have two notebooks with the same name: use the one written in most recently
   const nm = $('col-name').value;
@@ -529,14 +540,15 @@ function renderCollection() {
   opt('last', '마지막 쪽'); for (let i = 1; i <= most; i++) opt(String(i), i + '쪽');
   // a worksheet that was handed out sits at a different page number in each notebook (some children
   // added pages in between): pick it by worksheet instead, and every child's copy of it is shown
-  const hs = colHandouts.filter(h => normName(h.nbName) === nm);
-  if (hs.length) {
+  // the same worksheet handed out on different days (e.g. again for children who were away) is one entry
+  const groups = colHandoutGroups(nm);
+  if (groups.length) {
     const grp = document.createElement('optgroup'); grp.label = '나눠 준 학습지로 모아 보기';
-    for (const h of hs.slice(0, 15)) for (let i = 0; i < (h.pages || 1); i++) {
-      const o = document.createElement('option'); o.value = `h:${h.id}:${i}`;
-      o.textContent = `${String(h.title || '학습지').replace(/\.[a-z0-9]+$/i, '')}${h.pages > 1 ? ` ${i + 1}쪽` : ''} (${fmtDate(new Date(h.created).toISOString())})`;
+    groups.slice(0, 15).forEach((g, gi) => { for (let i = 0; i < g.pages; i++) {
+      const o = document.createElement('option'); o.value = `h:${gi}:${i}`;
+      o.textContent = `${g.title}${g.pages > 1 ? ` ${i + 1}쪽` : ''}${g.ids.length > 1 ? ` (${g.ids.length}번 나눠 줌)` : ''}`;
       grp.append(o);
-    }
+    } });
     ps.append(grp);
   }
   ps.value = [...ps.options].some(o => o.value === keep) ? keep : 'last';
@@ -564,8 +576,11 @@ function layoutCollection() {
 async function colPage(st, nbId) {
   const ref = classRefs(classId, st.id).pages(nbId), want = $('col-page').value;
   if (want.startsWith('h:')) {
-    const [, hid, i] = want.split(':');
-    const q = await ref.where('bgSrc', '==', `classes/${classId}/handouts/${hid}/pages/p${i}`).get();
+    const [, gi, i] = want.split(':');
+    const g = colHandoutGroups($('col-name').value)[+gi];
+    if (!g) return null;
+    const srcs = g.ids.slice(0, 30).map(hid => `classes/${classId}/handouts/${hid}/pages/p${i}`);
+    const q = await ref.where('bgSrc', 'in', srcs).get();
     return q.docs.map(d => ({ ...d.data(), id: d.id })).filter(d => typeof d.n === 'number').sort((a, b) => a.n - b.n)[0] || null;
   }
   const q = await (want === 'last' ? ref.orderBy('n', 'desc').limit(1) : ref.where('n', '==', +want).limit(1)).get();
