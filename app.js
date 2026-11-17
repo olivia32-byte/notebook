@@ -36,19 +36,24 @@ const KO_ERR = {
 const errText = e => KO_ERR[e && e.code] || ('문제가 생겼어요' + (e && e.code ? ` (${e.code})` : ''));
 
 /* ================= stroke encoding ================= */
+// Points are stored to 1/8 of a page unit (was 1/2). At 1/2 the points snapped to a coarse grid, which
+// was invisible while writing but made a reopened stroke wobble, most of all on a zoomed-in page.
+// Strokes saved before carry no "q" and are read the old way.
+const ENC_Q = 8, ENC_PQ = 50;
 function encode(s) {
   let px = 0, py = 0, pp = 0; const out = [];
   for (const p of s.pts) {
-    const X = Math.round(p.x * 2), Y = Math.round(p.y * 2), P = Math.round(p.p * 20);
+    const X = Math.round(p.x * ENC_Q), Y = Math.round(p.y * ENC_Q), P = Math.round(p.p * ENC_PQ);
     out.push(X - px, Y - py, P - pp); px = X; py = Y; pp = P;
   }
-  return { c: s.color, s: s.size, t: s.erase ? 'e' : s.hl ? 'h' : 'p', d: out.join(',') };
+  return { c: s.color, s: s.size, t: s.erase ? 'e' : s.hl ? 'h' : 'p', q: ENC_Q, d: out.join(',') };
 }
 function encodeCached(s) { return s === current ? encode(s) : (s._enc || (s._enc = encode(s))); }
 function decode(o) {
   const n = o.d ? o.d.split(',').map(Number) : []; const pts = [];
+  const q = o.q || 2, pq = o.q ? ENC_PQ : 20;
   let X = 0, Y = 0, P = 0;
-  for (let i = 0; i + 2 < n.length; i += 3) { X += n[i]; Y += n[i + 1]; P += n[i + 2]; pts.push({ x: X / 2, y: Y / 2, p: P / 20 }); }
+  for (let i = 0; i + 2 < n.length; i += 3) { X += n[i]; Y += n[i + 1]; P += n[i + 2]; pts.push({ x: X / q, y: Y / q, p: P / pq }); }
   return { pts, color: o.c, size: o.s, erase: o.t === 'e', hl: o.t === 'h', _enc: o };
 }
 // decode only strokes added since the last copy (the student usually just added a few)
@@ -2009,12 +2014,17 @@ function drawStroke(c, s, k = view) {
   if (pts.length === 1) { dotAt(c, s, pts[0], k); return; }
   c.strokeStyle = inkMode(c, s); c.lineCap = 'round'; c.lineJoin = 'round';
   const wq = i => Math.round(widthFor(s, (pts[i - 1].p + pts[i].p) / 2) * k * 4) / 4;
-  let w = wq(1);
-  c.lineWidth = w; c.beginPath(); c.moveTo(pts[0].x * k, pts[0].y * k);
+  // smoothed through the middle of each pair of points, so small jitter in the points does not show
+  let w = wq(1), cx = pts[0].x * k, cy = pts[0].y * k;
+  c.lineWidth = w; c.beginPath(); c.moveTo(cx, cy);
   for (let i = 1; i < pts.length; i++) {
     const nw = i === 1 ? w : wq(i);
-    if (nw !== w) { c.stroke(); w = nw; c.lineWidth = w; c.beginPath(); c.moveTo(pts[i - 1].x * k, pts[i - 1].y * k); }
-    c.lineTo(pts[i].x * k, pts[i].y * k);
+    if (nw !== w) { c.stroke(); w = nw; c.lineWidth = w; c.beginPath(); c.moveTo(cx, cy); }
+    const ax = pts[i - 1].x * k, ay = pts[i - 1].y * k, bx = pts[i].x * k, by = pts[i].y * k;
+    const mx = (ax + bx) / 2, my = (ay + by) / 2;
+    if (i === 1) c.lineTo(mx, my); else c.quadraticCurveTo(ax, ay, mx, my);
+    cx = mx; cy = my;
+    if (i === pts.length - 1) { c.lineTo(bx, by); cx = bx; cy = by; }
   }
   c.stroke();
 }
