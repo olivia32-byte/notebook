@@ -1031,6 +1031,7 @@ function setEditorChrome() {
 }
 
 function showPage(i) {
+  if (pendingView) commitView();
   if (current) { clearTimeout(holdTimer); holdTimer = null; current = null; activeId = null; clearLive(); }
   clearPageSubs(); resetDelPage();
   if (panY !== 0) { panY = 0; applyView(); resetLayers(); }
@@ -1999,11 +2000,23 @@ function dotAt(c, s, a, k = view) {
   c.fillStyle = inkMode(c, s);
   c.beginPath(); c.arc(a.x * k, a.y * k, widthFor(s, a.p) * k / 2, 0, Math.PI * 2); c.fill();
 }
+// A finished stroke is drawn as a few long paths instead of one tiny path per segment: neighbouring
+// segments whose width differs by less than a quarter of a screen pixel share one path. Redrawing a page
+// full of writing (after zooming, turning a page) became several times faster.
 function drawStroke(c, s, k = view) {
   if (s.hl) { drawHighlight(c, s, k); return; }
   const pts = s.pts; if (!pts.length) return;
   if (pts.length === 1) { dotAt(c, s, pts[0], k); return; }
-  for (let i = 1; i < pts.length; i++) seg(c, s, pts[i - 1], pts[i], k);
+  c.strokeStyle = inkMode(c, s); c.lineCap = 'round'; c.lineJoin = 'round';
+  const wq = i => Math.round(widthFor(s, (pts[i - 1].p + pts[i].p) / 2) * k * 4) / 4;
+  let w = wq(1);
+  c.lineWidth = w; c.beginPath(); c.moveTo(pts[0].x * k, pts[0].y * k);
+  for (let i = 1; i < pts.length; i++) {
+    const nw = i === 1 ? w : wq(i);
+    if (nw !== w) { c.stroke(); w = nw; c.lineWidth = w; c.beginPath(); c.moveTo(pts[i - 1].x * k, pts[i - 1].y * k); }
+    c.lineTo(pts[i].x * k, pts[i].y * k);
+  }
+  c.stroke();
 }
 // Layers: paper, the student's ink (base, teacher view), the editable ink, the teacher's marks (overlay).
 // Finished strokes are added to their layer one at a time; a full rebuild happens only after undo,
@@ -2110,13 +2123,14 @@ function setView(z, px, py) {
 }
 // zoom about a point on the sheet (sheet CSS px), keeping that point still
 function zoomAt(z, sx, sy) {
+  commitView();
   const nz = clampZ(z);
   const px = sx - (sx - panX) * nz / zoom, py = sy - (sy - panY) * nz / zoom;
   setView(nz, px, py);
 }
 $('zoom-in').addEventListener('click', () => zoomAt(zoom * 1.5, sheetW() / 2, sheetH() / 2));
 $('zoom-out').addEventListener('click', () => zoomAt(zoom / 1.5, sheetW() / 2, sheetH() / 2));
-$('zoom-reset').addEventListener('click', () => setView(1, 0, 0));
+$('zoom-reset').addEventListener('click', () => { pendingView = null; clearTimeout(viewTimer); setView(1, 0, 0); });
 // finger gestures (only while fingers cannot write: palm rejection on and an S Pen known)
 const touches = new Map();
 let gesture = null, lastPenAt = 0;
@@ -2126,8 +2140,16 @@ function gestureStart() {
   const ps = [...touches.values()];
   const c = ps.length > 1 ? { x: (ps[0].x + ps[1].x) / 2, y: (ps[0].y + ps[1].y) / 2 } : ps[0];
   const d = ps.length > 1 ? Math.hypot(ps[0].x - ps[1].x, ps[0].y - ps[1].y) : 0;
-  gesture = { z0: zoom, px0: panX, py0: panY, c0: c, d0: d, n: ps.length, z: zoom, px: panX, py: panY };
+  // a view still waiting to be drawn sharp (fingers lifted a moment ago) is where this gesture starts from
+  const v = pendingView || { z: zoom, px: panX, py: panY };
+  gesture = { z0: v.z, px0: v.px, py0: v.py, c0: c, d0: d, n: ps.length, z: v.z, px: v.px, py: v.py };
+  clearTimeout(viewTimer);
+  // move and stretch only the ordinary canvas while the fingers move (transforming the low-latency
+  // writing canvas is slow on the tablet): bring it up to date and hide the writing canvas
+  if (!ink.style.visibility) { sctx.drawImage(ink, 0, 0); ink.style.visibility = 'hidden'; }
 }
+let gestureFrame = 0;
+function gestureMoveSoon() { if (!gestureFrame) gestureFrame = requestAnimationFrame(() => { gestureFrame = 0; gestureMove(); }); }
 function gestureMove() {
   const g = gesture, ps = [...touches.values()];
   if (!g || !ps.length) return;
@@ -2141,14 +2163,24 @@ function gestureMove() {
   g.z = z; g.px = px; g.py = py; g.moved = true;
   // quick preview: stretch the picture already on screen
   const r = z / zoom;
-  ink.style.transformOrigin = shown.style.transformOrigin = '0 0';
-  ink.style.transform = shown.style.transform = `translate(${px - r * panX}px, ${py - r * panY}px) scale(${r})`;
+  shown.style.transformOrigin = '0 0';
+  shown.style.transform = `translate(${px - r * panX}px, ${py - r * panY}px) scale(${r})`;
   live.style.visibility = 'hidden';
   const o = $('over'); if (o) o.style.transform = `translate(${px}px, ${py}px) scale(${z})`;
 }
+// Drawing the whole page sharp again takes a moment on a page full of writing, so it waits until the
+// fingers have rested for a short while; pinching again straight away keeps using the quick stretched picture.
+let pendingView = null, viewTimer = null;
+function commitView() {
+  clearTimeout(viewTimer);
+  const v = pendingView; pendingView = null;
+  if (v) setView(v.z, v.px, v.py);
+}
 function gestureEnd() {
+  if (gestureFrame) { cancelAnimationFrame(gestureFrame); gestureFrame = 0; if (gesture) gestureMove(); }
   const g = gesture; gesture = null;
-  if (g && g.moved) setView(g.z, g.px, g.py);
+  if (g && g.moved) { pendingView = { z: g.z, px: g.px, py: g.py }; clearTimeout(viewTimer); viewTimer = setTimeout(commitView, 180); }
+  else if (pendingView) { clearTimeout(viewTimer); viewTimer = setTimeout(commitView, 180); }
 }
 // the bar on the right: drag it (finger, pen or mouse) to move a page taller than the screen
 function updateVbar() {
@@ -2162,6 +2194,7 @@ function updateVbar() {
   const bar = $('vbar'); let drag = null;
   bar.addEventListener('pointerdown', e => {
     e.stopPropagation(); e.preventDefault(); bar.setPointerCapture(e.pointerId);
+    commitView();
     const full = PAGE_H * scale * zoom, h = $('vbar-thumb').offsetHeight;
     const r = bar.getBoundingClientRect(), y = e.clientY - r.top;
     const top = (sheetH() - h) * (-panY / (full - sheetH()));
@@ -2183,7 +2216,7 @@ function updateVbar() {
 })();
 sheet.addEventListener('pointerdown', e => {
   if (e.target.closest && e.target.closest('#vbar')) return;
-  if (e.pointerType === 'pen') { lastPenAt = Date.now(); if (gesture) { touches.clear(); gestureEnd(); } return; }
+  if (e.pointerType === 'pen') { lastPenAt = Date.now(); if (gesture) { touches.clear(); gestureEnd(); } commitView(); return; }
   if (e.pointerType !== 'touch' || !fingersNavigate()) return;
   // a palm resting while the pen writes or hovers must not move the page
   if ((current && current.type === 'pen') || Date.now() - lastPenAt < 600) return;
@@ -2195,10 +2228,12 @@ sheet.addEventListener('pointermove', e => {
   if (e.pointerType === 'pen') { lastPenAt = Date.now(); return; }
   if (!touches.has(e.pointerId)) return;
   touches.set(e.pointerId, sheetXY(e));
-  if (gesture) gestureMove();
+  if (gesture) gestureMoveSoon();
 }, true);
 function touchUp(e) {
   if (!touches.has(e.pointerId)) return;
+  // finish the last finger movement before this finger counts as lifted
+  if (gestureFrame) { cancelAnimationFrame(gestureFrame); gestureFrame = 0; gestureMove(); }
   touches.delete(e.pointerId);
   gestureEnd();
   if (touches.size) gestureStart(); // one finger left after a pinch: keep moving from here
