@@ -1068,6 +1068,9 @@ function setEditorChrome() {
   $('goto-form').hidden = true; $('t-merge-box').hidden = true;
   $('del-page').hidden = false;
   $('trash-btn').hidden = true; $('trash').hidden = true;
+  // the teacher finds page delete under "쪽 설정"; the student keeps it in the toolbar
+  (t ? $('t-pg-del-slot') : $('del-page-home')).append($('del-page'), $('trash-btn'));
+  closeTMenus();
   $('paper').hidden = t;
   $('bg-btn').hidden = t;
   $('chat').hidden = true;
@@ -1215,6 +1218,15 @@ function movePage(dir) {
   $('prev').disabled = pi === 0; $('next').disabled = pi === pages.length - 1;
   toast(`이 쪽을 ${pi + 1}쪽으로 옮겼어요`);
 }
+// teacher bar: "공책 설정", "쪽 설정" and "내보내기" each open their own small row of buttons
+function closeTMenus(except) {
+  document.querySelectorAll('.t-menu-btn').forEach(b => { if (b === except) return; b.setAttribute('aria-expanded', 'false'); $(b.dataset.menu).hidden = true; });
+}
+document.querySelectorAll('.t-menu-btn').forEach(b => b.addEventListener('click', () => {
+  const open = b.getAttribute('aria-expanded') !== 'true';
+  closeTMenus(b); b.setAttribute('aria-expanded', String(open)); $(b.dataset.menu).hidden = !open;
+  if (!open) { $('t-rename-box').hidden = true; $('t-merge-box').hidden = true; }
+}));
 $('t-move-prev').addEventListener('click', () => movePage(-1));
 $('t-move-next').addEventListener('click', () => movePage(1));
 // teacher: put another notebook of the same student after this one (its pages, pictures, red pen and chat
