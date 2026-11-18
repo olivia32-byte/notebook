@@ -141,6 +141,7 @@ main { flex: 1; min-height: 0; position: relative; padding-block: 12px 8px; }
 
 footer.pages { padding-block: 0 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .pageno { font-variant-numeric: tabular-nums; min-width: 72px; text-align: center; font-size: 14px; }
+button.pageno { background: transparent; border: 1px dashed var(--line); box-shadow: none; }
 .save { margin-left: auto; font-size: 13px; color: var(--muted); }
 .save.err { color: var(--danger); }
 
@@ -371,7 +372,8 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
       <input type="text" id="col-rename-input" maxlength="20" aria-label="새 공책 이름" style="width:160px">
       <button type="submit" class="primary">모두 바꾸기</button><button type="button" id="col-rename-cancel">취소</button>
     </form>
-    <span class="label">쪽</span><select id="col-page" aria-label="모아 볼 쪽"></select>
+    <span class="label">모아 보기</span><select id="col-mode" aria-label="모아 보는 방법"><option value="page">쪽수별</option><option value="sheet">학습지별</option><option value="date">날짜별</option></select>
+    <select id="col-page" aria-label="모아 볼 쪽"></select>
     <span class="small" id="col-status"></span>
   </div>
   <div class="kids" id="col-kids" hidden></div>
@@ -464,10 +466,21 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
       <select id="t-notebook" aria-label="학생 공책 고르기"></select>
       <button id="t-rename">이름 바꾸기</button>
       <button id="t-delete">공책 지우기</button>
+      <button id="t-merge">공책 합치기</button>
       <form class="row" id="t-rename-box" hidden>
         <input type="text" id="t-rename-input" maxlength="20" aria-label="새 공책 이름" style="width:160px">
         <button type="submit" class="primary">저장</button><button type="button" id="t-rename-cancel">취소</button>
       </form>
+      <form class="row" id="t-merge-box" hidden>
+        <select id="t-merge-from" aria-label="붙일 공책"></select>
+        <span class="small">을(를) 이 공책 뒤에</span>
+        <button type="submit" class="primary">붙이기</button><button type="button" id="t-merge-cancel">취소</button>
+      </form>
+    </div>
+    <div class="group" role="group" aria-label="쪽 순서">
+      <span class="label">쪽 순서</span>
+      <button id="t-move-prev">◀ 앞으로</button>
+      <button id="t-move-next">뒤로 ▶</button>
     </div>
     <div class="group" id="t-browse" hidden>
       <button id="t-prev-kid">◀ 이전 학생</button>
@@ -514,7 +527,8 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 
   <footer class="pages gutter">
     <button id="prev">◀ 앞 쪽</button>
-    <span class="pageno" id="pageno">1 / 1쪽</span>
+    <button class="pageno" id="pageno" title="눌러서 쪽 번호로 이동">1 / 1쪽</button>
+    <form id="goto-form" class="row" hidden><input type="number" id="goto-input" min="1" inputmode="numeric" aria-label="이동할 쪽" style="width:70px"><button type="submit" class="primary">이동</button></form>
     <button id="next">다음 쪽 ▶</button>
     <button id="add-page">+ 새 페이지</button>
     <button id="chat-open">대화<span class="badge" id="chat-badge" hidden>0</span></button>
@@ -530,7 +544,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 <div id="busy" hidden><div class="busy-box"><div class="spinner"></div><b id="busy-text">잠시만 기다려 주세요…</b><span class="small">끝날 때까지 공책을 넘기거나 나가지 말아 주세요.</span></div></div>
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=44"></script>
-<script type="module" src="app.js?v=44"></script>
+<script src="config.js?v=45"></script>
+<script type="module" src="app.js?v=45"></script>
 </body>
 </html>

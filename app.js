@@ -502,7 +502,7 @@ async function loadCollection() {
   const got = await Promise.all(students.map(st => classRefs(classId, st.id).books.get()
     .then(q => [st.id, q.docs.map(d => ({ ...d.data(), id: d.id })).filter(n => !n.deletedAt)]).catch(() => [st.id, []])));
   if (id !== colLoadId) return;
-  colBooks = Object.fromEntries(got);
+  colBooks = Object.fromEntries(got); colPageLists = {};
   try { colHandouts = (await db.collection(`classes/${classId}/handouts`).get()).docs.map(d => ({ ...d.data(), id: d.id })).sort((a, b) => (b.created || 0) - (a.created || 0)); }
   catch (e) { colHandouts = []; }
   if (id !== colLoadId) return;
@@ -527,6 +527,17 @@ function colHandoutGroups(nm) {
   }
   return [...by.values()];
 }
+let colPageLists = {}, colListsLoading = false;
+const dayKey = iso => { const d = new Date(iso); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+async function loadColPageLists(items) {
+  if (colListsLoading) return; colListsLoading = true;
+  const id = colLoadId;
+  await Promise.all(items.map(x => colPageLists[x.nb.id] ? null : classRefs(classId, x.st.id).pages(x.nb.id).orderBy('n').get()
+    .then(q => { colPageLists[x.nb.id] = q.docs.map(d => ({ ...d.data(), id: d.id })).filter(d => typeof d.n === 'number'); })
+    .catch(() => { colPageLists[x.nb.id] = []; })));
+  colListsLoading = false;
+  if (id === colLoadId && colMode && $('col-mode').value === 'date') renderCollection();
+}
 function colPick(st) {
   // a student may have two notebooks with the same name: use the one written in most recently
   const nm = $('col-name').value;
@@ -537,24 +548,32 @@ function renderCollection() {
   const box = $('col-kids'); box.textContent = ''; colTiles = {};
   colItems = students.map(st => ({ st, nb: colPick(st) }));
   const most = Math.max(1, ...colItems.map(x => (x.nb && x.nb.pages) || 1));
-  const ps = $('col-page'), keep = ps.value || 'last';
+  const ps = $('col-page'), keep = ps.value || 'last', mode = $('col-mode').value || 'page';
+  lsPut('dn-col-mode', mode);
   ps.textContent = '';
-  const opt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; ps.append(o); };
-  opt('last', '마지막 쪽'); for (let i = 1; i <= most; i++) opt(String(i), i + '쪽');
-  // a worksheet that was handed out sits at a different page number in each notebook (some children
-  // added pages in between): pick it by worksheet instead, and every child's copy of it is shown
-  // the same worksheet handed out on different days (e.g. again for children who were away) is one entry
-  const groups = colHandoutGroups(nm);
-  if (groups.length) {
-    const grp = document.createElement('optgroup'); grp.label = '나눠 준 학습지로 모아 보기';
-    groups.slice(0, 15).forEach((g, gi) => { for (let i = 0; i < g.pages; i++) {
-      const o = document.createElement('option'); o.value = `h:${gi}:${i}`;
-      o.textContent = `${g.title}${g.pages > 1 ? ` ${i + 1}쪽` : ''}${g.ids.length > 1 ? ` (${g.ids.length}번 나눠 줌)` : ''}`;
-      grp.append(o);
-    } });
-    ps.append(grp);
+  const opt = (v, t, off) => { const o = document.createElement('option'); o.value = v; o.textContent = t; o.disabled = !!off; ps.append(o); };
+  if (mode === 'page') { opt('last', '마지막 쪽'); for (let i = 1; i <= most; i++) opt(String(i), i + '쪽'); }
+  else if (mode === 'sheet') {
+    // a worksheet that was handed out sits at a different page number in each notebook (some children
+    // added pages in between): pick it by worksheet, and every child's copy of it is shown.
+    // The same worksheet handed out on different days (e.g. again for children who were away) is one entry.
+    const groups = colHandoutGroups(nm);
+    groups.slice(0, 15).forEach((g, gi) => { for (let i = 0; i < g.pages; i++)
+      opt(`h:${gi}:${i}`, `${g.title}${g.pages > 1 ? ` ${i + 1}쪽` : ''}${g.ids.length > 1 ? ` (${g.ids.length}번 나눠 줌)` : ''}`); });
+    if (!groups.length) opt('', '이 공책으로 나눠 준 학습지가 없어요', true);
+  } else {
+    // the days pages were added on, newest first (each child's pages of that day)
+    const have = colItems.filter(x => x.nb);
+    if (have.some(x => !colPageLists[x.nb.id])) { opt('', '날짜를 모으는 중…', true); loadColPageLists(have); }
+    else {
+      const days = new Set();
+      for (const x of have) for (const pg of colPageLists[x.nb.id]) if (pg.created) days.add(dayKey(pg.created));
+      [...days].sort().reverse().forEach(d => opt('d:' + d, fmtDate(d + 'T12:00:00')));
+      if (!days.size) opt('', '쓴 쪽이 없어요', true);
+    }
   }
-  ps.value = [...ps.options].some(o => o.value === keep) ? keep : 'last';
+  const usable = [...ps.options].filter(o => !o.disabled);
+  ps.value = usable.some(o => o.value === keep) ? keep : (usable[0] ? usable[0].value : '');
   if (!nm) return;
   colItems.forEach((it, i) => {
     const el = document.createElement('button'); el.className = 'kid' + (it.nb ? '' : ' none');
@@ -578,6 +597,13 @@ function layoutCollection() {
 }
 async function colPage(st, nbId) {
   const ref = classRefs(classId, st.id).pages(nbId), want = $('col-page').value;
+  if (!want) return null;
+  if (want.startsWith('d:')) {
+    const day = want.slice(2);
+    if (!colPageLists[nbId]) colPageLists[nbId] = (await ref.orderBy('n').get()).docs.map(d => ({ ...d.data(), id: d.id })).filter(d => typeof d.n === 'number');
+    const of = colPageLists[nbId].filter(p => p.created && dayKey(p.created) === day);
+    return of[0] ? { ...of[0], _dayCount: of.length } : null;
+  }
   if (want.startsWith('h:')) {
     const [, gi, i] = want.split(':');
     const g = colHandoutGroups($('col-name').value)[+gi];
@@ -597,7 +623,8 @@ async function loadColTile(it) {
     if (colTiles[it.st.id] !== t) return;
     it.pg = pg;
     t.data = pg;
-    t.where.textContent = pg ? `${pg.n}쪽 · ${fmtDate(pg.created)}` : (want === 'last' ? '빈 공책' : want.startsWith('h:') ? '이 학습지가 없어요' : `${want}쪽이 없어요`);
+    t.where.textContent = pg ? `${pg.n}쪽 · ${fmtDate(pg.created)}${pg._dayCount > 1 ? ` (이날 ${pg._dayCount}쪽)` : ''}`
+      : (want === 'last' ? '빈 공책' : !want ? '' : want.startsWith('h:') ? '이 학습지가 없어요' : want.startsWith('d:') ? '이날 쓴 쪽이 없어요' : `${want}쪽이 없어요`);
     paintThumb(t.cv, t.el, pg);
     if (!pg) return;
     const fb = await classRefs(classId, it.st.id).fb(it.nb.id, pg.id).get();
@@ -628,6 +655,8 @@ $('col-rename-box').addEventListener('submit', async e => {
 });
 $('col-name').addEventListener('change', () => { $('col-page').value = 'last'; renderCollection(); });
 $('col-page').addEventListener('change', renderCollection);
+$('col-mode').addEventListener('change', () => { $('col-page').value = ''; renderCollection(); });
+{ const m = lsGet('dn-col-mode'); if (m === 'page' || m === 'sheet' || m === 'date') $('col-mode').value = m; }
 function openFromCollection(i) {
   const it = colItems[i]; if (!it || !it.nb) return;
   browse = { i };
@@ -1023,7 +1052,8 @@ function setEditorChrome() {
   const t = mode === 'teacher';
   $('back').textContent = t ? '← 우리 반' : '← 공책장';
   $('teacher-bar').hidden = !t;
-  $('add-page').hidden = t;
+  $('add-page').hidden = false;
+  $('goto-form').hidden = true; $('t-merge-box').hidden = true;
   $('del-page').hidden = false;
   $('trash-btn').hidden = true; $('trash').hidden = true;
   $('paper').hidden = t;
@@ -1122,13 +1152,93 @@ document.querySelectorAll('.seal-btn').forEach(b => b.addEventListener('click', 
 
 $('prev').addEventListener('click', async () => { await flushSave(); showPage(pi - 1); });
 $('next').addEventListener('click', async () => { await flushSave(); showPage(pi + 1); });
-$('add-page').addEventListener('click', async () => {
-  await flushSave();
-  const last = pages[pages.length - 1];
-  const pg = { id: newId(), n: last.n + 1, paper: last.paper, created: today(), strokes: [], _dec: [], _nb: nb.id };
-  pages.push(pg);
-  showPage(pages.length - 1);
-  markDirty();
+// a new page goes right after the page on screen; the pages after it move one number later
+$('add-page').addEventListener('click', () => {
+  if (!nb || !pages[pi]) return;
+  flushSave();
+  const cur = pages[pi], at = pi + 1, book = nb, refs = R;
+  const pg = { id: newId(), n: cur.n + 1, paper: cur.paper, created: today(), strokes: [], _dec: [], _nb: book.id };
+  for (const p of pages.slice(at)) { p.n += 1; refs.page(book.id, p.id).update({ n: p.n }).catch(() => {}); }
+  pages.splice(at, 0, pg);
+  book.pages = pages.length; book.updated = today();
+  // written at once (the teacher's own writing goes elsewhere, so the page itself must exist)
+  store.putPage(book.id, { id: pg.id, n: pg.n, paper: pg.paper || '', created: pg.created, strokes: [], w: PAGE_W, h: PAGE_H, bg: 0, bgSrc: '' }).catch(() => {});
+  store.touchNotebook(book).catch(() => {}); book._savedPages = pages.length;
+  showPage(at);
+});
+// tap the page number to type a page and go straight there
+$('pageno').addEventListener('click', () => {
+  if (!pages.length) return;
+  $('pageno').hidden = true; $('goto-form').hidden = false;
+  const i = $('goto-input'); i.max = pages.length; i.value = ''; i.placeholder = String(pi + 1); i.focus();
+});
+function closeGoto() { $('goto-form').hidden = true; $('pageno').hidden = false; }
+$('goto-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const n = parseInt($('goto-input').value, 10);
+  closeGoto();
+  if (!n) return;
+  if (n < 1 || n > pages.length) { toast(`1쪽부터 ${pages.length}쪽까지 있어요`); return; }
+  if (n - 1 !== pi) { flushSave(); showPage(n - 1); }
+});
+$('goto-input').addEventListener('blur', () => setTimeout(() => { if (!$('goto-form').contains(document.activeElement)) closeGoto(); }, 150));
+// teacher: move the page on screen one place earlier or later
+function movePage(dir) {
+  const j = pi + dir;
+  if (!nb || !pages[pi] || j < 0 || j >= pages.length) { toast(dir < 0 ? '맨 앞 쪽이에요' : '맨 뒤 쪽이에요'); return; }
+  flushSave();
+  const a = pages[pi], b = pages[j], book = nb, refs = R;
+  [a.n, b.n] = [b.n, a.n];
+  pages[pi] = b; pages[j] = a;
+  refs.page(book.id, a.id).update({ n: a.n }).catch(e => toast('순서를 저장하지 못했어요. ' + errText(e)));
+  refs.page(book.id, b.id).update({ n: b.n }).catch(() => {});
+  pi = j;
+  $('pageno').textContent = `${pi + 1} / ${pages.length}쪽`;
+  $('prev').disabled = pi === 0; $('next').disabled = pi === pages.length - 1;
+  toast(`이 쪽을 ${pi + 1}쪽으로 옮겼어요`);
+}
+$('t-move-prev').addEventListener('click', () => movePage(-1));
+$('t-move-next').addEventListener('click', () => movePage(1));
+// teacher: put another notebook of the same student after this one (its pages, pictures, red pen and chat
+// all move); the emptied notebook goes to the deleted notebooks for 30 days
+$('t-merge').addEventListener('click', () => {
+  if (!nb) return;
+  const others = tNotebooks.filter(n => n.id !== nb.id);
+  if (!others.length) { toast('이 학생은 합칠 다른 공책이 없어요'); return; }
+  const sel = $('t-merge-from'); sel.textContent = '';
+  for (const n of others) { const o = document.createElement('option'); o.value = n.id; o.textContent = `${n.name} (${n.pages || '?'}쪽)`; sel.append(o); }
+  $('t-merge-box').hidden = false;
+});
+$('t-merge-cancel').addEventListener('click', () => { $('t-merge-box').hidden = true; });
+$('t-merge-box').addEventListener('submit', async e => {
+  e.preventDefault();
+  const from = tNotebooks.find(n => n.id === $('t-merge-from').value), into = nb, refs = R;
+  if (!from || !into || from.id === into.id) return;
+  $('t-merge-box').hidden = true;
+  flushSave();
+  busy(true, '공책을 합치는 중…');
+  try {
+    const src = (await refs.pages(from.id).get()).docs.map(d => ({ id: d.id, data: d.data() })).filter(d => !d.id.endsWith('-trash'));
+    const numbered = src.filter(d => typeof d.data.n === 'number').sort((a, b) => a.data.n - b.data.n);
+    let n = pages.reduce((m, p) => Math.max(m, p.n || 0), 0), i = 0;
+    for (const d of src.filter(d => typeof d.data.n !== 'number')) await refs.page(into.id, d.id).set(d.data); // pictures
+    for (const d of numbered) {
+      busy(true, `공책을 합치는 중… ${++i} / ${numbered.length}쪽`);
+      await refs.page(into.id, d.id).set({ ...d.data, n: ++n });
+      const fb = await refs.fb(from.id, d.id).get().catch(() => null);
+      if (fb && fb.exists) await refs.fb(into.id, d.id).set(fb.data());
+      const chat = await refs.chat(from.id, d.id).get().catch(() => null);
+      if (chat) for (const m of chat.docs) await refs.chat(into.id, d.id).doc(m.id).set(m.data());
+    }
+    await refs.books.doc(into.id).update({ pages: pages.length + numbered.length, updated: today() });
+    await refs.books.doc(from.id).update({ deletedAt: Date.now() });
+    tNotebooks = tNotebooks.filter(x => x.id !== from.id);
+    const o = [...$('t-notebook').options].find(x => x.value === from.id); if (o) o.remove();
+    if (tStudent && colBooks[tStudent.id]) colBooks[tStudent.id] = colBooks[tStudent.id].filter(x => x.id !== from.id);
+    toast(`"${from.name}" ${numbered.length}쪽을 "${into.name}" 뒤에 붙였어요`);
+    busy(false);
+    await loadTeacherNotebook(into, numbered[0] ? numbered[0].id : null);
+  } catch (err) { busy(false); toast('합치지 못했어요. ' + errText(err)); }
 });
 // delete the page on screen: two taps, like deleting a notebook. The last page stays (delete the notebook instead).
 let delPageTimer = null;
