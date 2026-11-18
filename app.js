@@ -683,7 +683,7 @@ $('t-prev-kid').addEventListener('click', () => browseStep(-1));
 $('t-next-kid').addEventListener('click', () => browseStep(1));
 function updateBrowseBar() {
   const on = !!browse; $('t-browse').hidden = !on;
-  $('t-done').hidden = !(browse && browse.rows && browse.rows[browse.i] && ['seen', 'fixed'].includes(browse.rows[browse.i].cat));
+  $('t-done').hidden = !(browse && browse.rows && browse.rows[browse.i] && (['seen', 'fixed'].includes(browse.rows[browse.i].cat) || (browse.rows[browse.i].cat === 'unseen' && browse.rows[browse.i].t < FB_TRACK_START)));
   if (!on) return;
   if (browse.rows) { const r = browse.rows[browse.i]; $('t-kid-pos').textContent = `피드백 현황 · ${browse.i + 1} / ${browse.rows.length}${r ? ' · ' + FB_LABEL[r.cat] : ''}`; return; }
   const have = colItems.filter(x => x.nb), at = have.indexOf(colItems[browse.i]);
