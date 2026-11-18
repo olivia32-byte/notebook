@@ -235,7 +235,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 .fb-row .when { color: var(--muted); font-size: 13px; text-align: right; }
 .fb-row .acts { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
 .fb-tag { font-size: 13px; padding: 3px 10px; border-radius: 999px; font-weight: 600; white-space: nowrap; }
-.fb-tag.unseen { background: #fde8e6; color: #b3261e; } .fb-tag.seen { background: #fff4d1; color: #8a6500; } .fb-tag.retry { background: #fff0dd; color: #9a4f00; } .fb-tag.ask { background: #efe7fb; color: #5a2fa8; }
+.fb-tag.unseen { background: #fde8e6; color: #b3261e; } .fb-tag.pass { background: #fbf0ef; color: #b86a64; } .fb-tag.seen { background: #fff4d1; color: #8a6500; } .fb-tag.retry { background: #fff0dd; color: #9a4f00; } .fb-tag.ask { background: #efe7fb; color: #5a2fa8; }
 .fb-tag.fixed { background: #e3f4ea; color: #1e7a43; } .fb-tag.done { background: #eef1f4; color: var(--muted); }
 #fb-resend-all { border-color: #c0392b; color: #c0392b; font-weight: 600; }
 @media (max-width: 760px) { .fb-row { grid-template-columns: 1fr auto; } .fb-row .when { text-align: left; } }
@@ -406,6 +406,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
       <button data-f="fixed" class="fb-chip"><i class="fbd fixed"></i>고침·답장 <b>0</b></button>
       <button data-f="ask" class="fb-chip ask"><i class="fbd ask"></i>💬 학생 질문 <b>0</b></button>
       <button id="fb-more" class="fb-chip" aria-expanded="false">더보기 ▾</button>
+      <button data-f="pass" class="fb-chip more" hidden><i class="fbd unseen" style="opacity:.45"></i>미확인 · 칭찬 도장만 <b>0</b></button>
       <button data-f="seen" class="fb-chip more" hidden><i class="fbd seen"></i>확인함 <b>0</b></button>
       <button data-f="all" class="fb-chip more" hidden>전체 <b>0</b></button>
       <button data-f="done" class="fb-chip more" hidden>숨긴 것 <b>0</b></button>
@@ -584,7 +585,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 <div id="busy" hidden><div class="busy-box"><div class="spinner"></div><b id="busy-text">잠시만 기다려 주세요…</b><span class="small">끝날 때까지 공책을 넘기거나 나가지 말아 주세요.</span></div></div>
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=48"></script>
-<script type="module" src="app.js?v=48"></script>
+<script src="config.js?v=49"></script>
+<script type="module" src="app.js?v=49"></script>
 </body>
 </html>

@@ -683,7 +683,7 @@ $('t-prev-kid').addEventListener('click', () => browseStep(-1));
 $('t-next-kid').addEventListener('click', () => browseStep(1));
 function updateBrowseBar() {
   const on = !!browse; $('t-browse').hidden = !on;
-  $('t-done').hidden = !(browse && browse.rows && browse.rows[browse.i] && (['seen', 'fixed'].includes(browse.rows[browse.i].cat) || (browse.rows[browse.i].cat === 'unseen' && browse.rows[browse.i].t < FB_TRACK_START)));
+  $('t-done').hidden = !(browse && browse.rows && browse.rows[browse.i] && (['seen', 'fixed'].includes(browse.rows[browse.i].cat) || (['unseen', 'pass'].includes(browse.rows[browse.i].cat) && browse.rows[browse.i].t < FB_TRACK_START)));
   if (!on) return;
   if (browse.rows) { const r = browse.rows[browse.i]; $('t-kid-pos').textContent = `피드백 현황 · ${browse.i + 1} / ${browse.rows.length}${r ? ' · ' + FB_LABEL[r.cat] : ''}`; return; }
   const have = colItems.filter(x => x.nb), at = have.indexOf(colItems[browse.i]);
@@ -1937,7 +1937,7 @@ $('recover-close').addEventListener('click', () => { $('recover-box').hidden = t
 // repliedAt (answered in the chat). Pages stamped "다시 해 볼까요?" need fixing; for the rest, seeing is enough.
 const RETRY_SEAL = '다시 해 볼까요?';
 const FB_TRACK_START = Date.parse('2026-11-18T08:20:00Z');
-const FB_LABEL = { unseen: '미확인', retry: '다시 해 볼까요? · 안 고침', seen: '확인함', fixed: '고침·답장', ask: '학생 질문', done: '확인 완료' };
+const FB_LABEL = { unseen: '미확인', retry: '다시 해 볼까요? · 안 고침', seen: '확인함', fixed: '고침·답장', ask: '학생 질문', pass: '미확인 · 칭찬 도장만', done: '확인 완료' };
 let fbRows = [], fbFilter = 'unseen', fbLoadId = 0, fbMore = false;
 const hhmm = t => { const d = new Date(t), now = new Date(); const day = d.toDateString() === now.toDateString() ? '오늘' : (new Date(now - 86400000).toDateString() === d.toDateString() ? '어제' : `${d.getMonth() + 1}/${d.getDate()}`); return `${day} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
 async function loadFbStatus() {
@@ -1981,10 +1981,14 @@ async function loadFbStatus() {
     const looked = g.checked && g.checked >= Math.max(g.edited, g.replied);
     if (!g.t || (!g.ink && !g.seal)) {
       // only talk on this page: whose turn is it? The student's last word is a question waiting for an answer
-      g.cat = g.done ? 'done' : replied && !looked ? 'ask' : 'seen';
+      // a reply to the student's question counts as dealt with; a message the teacher started waits until the student opens it
+      const answered = g.replied && g.replied <= g.t;
+      g.cat = g.done ? 'done' : replied && !looked ? 'ask' : (!g.t || answered || seen) ? 'seen' : 'unseen';
       if (!g.t && g.cat !== 'ask') g.missing = true;
       if (!g.t) g.t = g.replied;
     } else g.cat = g.done ? 'done' : !seen ? 'unseen' : (g.seal === RETRY_SEAL && !fixed) ? 'retry' : ((fixed || replied) && !looked) ? 'fixed' : 'seen';
+    // only a "well done" seal and nothing else to read: not urgent, so it waits under "더보기"
+    if (g.cat === 'unseen' && !g.ink && g.seal && g.seal !== RETRY_SEAL && !g.kinds.has('chat')) g.cat = 'pass';
     if (g.cat === 'ask') {
       const cs = await refs.chat(g.nb, g.pg).orderBy('at').get().catch(() => null);
       const last = cs && cs.docs.length ? cs.docs[cs.docs.length - 1].data() : null;
@@ -2003,7 +2007,7 @@ function renderFbStatus() {
     b.querySelector('b').textContent = count(b.dataset.f);
   });
   // the three to act on are always out; questions only when there are some; the rest sit under "더보기"
-  const more = fbMore || ['seen', 'all', 'done'].includes(fbFilter) || (fbFilter === 'ask' && !count('ask'));
+  const more = fbMore || ['pass', 'seen', 'all', 'done'].includes(fbFilter) || (fbFilter === 'ask' && !count('ask'));
   const askB = document.querySelector('#fb-chips .fb-chip.ask'), moreB = $('fb-more');
   if (count('ask')) moreB.before(askB); else moreB.after(askB);
   askB.hidden = !count('ask') && !more;
@@ -2013,7 +2017,8 @@ function renderFbStatus() {
   $('fb-resend-all').hidden = !(fbFilter === 'retry' && rows.length);
   $('fb-resend-all').textContent = `🔔 ${rows.length}명 모두 다시 알림`;
   $('fb-hint').textContent = {
-    unseen: '피드백을 받고 아직 그 쪽을 열어 보지 않은 학생이에요.',
+    unseen: '빨간펜·대화·"다시 해 볼까요?" 도장을 받고 아직 그 쪽을 열어 보지 않은 학생이에요.',
+    pass: '칭찬 도장만 받고 아직 열어 보지 않았어요. 급하지 않아서 여기에 모아 두었어요.',
     retry: '"다시 해 볼까요?" 도장을 받고 열어 봤지만 아직 고치지 않은 학생이에요.',
     seen: '열어 봤어요. 다시 해 볼까요? 도장이 아니면 이걸로 충분해요.',
     fixed: '피드백 뒤에 고쳐 쓰거나 대화로 답한 학생이에요. 눌러서 고친 곳(초록)을 보면 "확인함"으로 넘어가요.',
@@ -2033,12 +2038,12 @@ function renderFbStatus() {
     const tag = document.createElement('span'); tag.className = 'fb-tag ' + g.cat; tag.textContent = '● ' + (g.cat === 'retry' ? '열어만 봄' : FB_LABEL[g.cat]);
     const when = document.createElement('span'); when.className = 'when'; when.textContent = hhmm(g.t);
     const acts = document.createElement('span'); acts.className = 'acts';
-    if (g.cat === 'retry' || g.cat === 'unseen') { const b = document.createElement('button'); b.textContent = '🔔 다시 알림'; b.addEventListener('click', ev => { ev.stopPropagation(); resendFb([g]); }); acts.append(b); }
+    if (g.cat === 'retry' || g.cat === 'unseen' || g.cat === 'pass') { const b = document.createElement('button'); b.textContent = '🔔 다시 알림'; b.addEventListener('click', ev => { ev.stopPropagation(); resendFb([g]); }); acts.append(b); }
     // only "seen" can be put away from the list. Unseen and not-yet-fixed stay until the student acts,
     // and fixed/replied is put away from the page itself, after the teacher has looked at the fix.
     if (g.cat === 'fixed' || g.cat === 'ask') { const s = document.createElement('span'); s.className = 'small'; s.textContent = g.cat === 'fixed' ? '눌러서 확인 →' : '눌러서 답장 →'; acts.append(s); }
     // temporary: feedback given before seen-tracking existed (deploy 2026-11-18) can be put away by hand
-    if (g.cat === 'seen' || g.cat === 'done' || (g.cat === 'unseen' && g.t < FB_TRACK_START)) {
+    if (g.cat === 'seen' || g.cat === 'done' || ((g.cat === 'unseen' || g.cat === 'pass') && g.t < FB_TRACK_START)) {
       const d = document.createElement('button'); d.textContent = g.cat === 'done' ? '다시 올리기' : '확인 완료';
       d.addEventListener('click', ev => { ev.stopPropagation(); setFbDone(g, g.cat !== 'done'); });
       acts.append(d);
