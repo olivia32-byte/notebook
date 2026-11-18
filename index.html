@@ -523,7 +523,6 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
         <button type="submit" class="primary">붙이기</button><button type="button" id="t-merge-cancel">취소</button>
       </form>
     </div>
-    <div class="group"><button id="t-changes" aria-pressed="true">고친 부분 표시</button></div>
     <div class="group" role="group" aria-label="쪽 설정">
       <button class="t-menu-btn" data-menu="t-pg-menu" aria-expanded="false">쪽 설정 ▾</button>
       <span class="t-menu" id="t-pg-menu" hidden>
@@ -533,12 +532,6 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
         <span id="t-pg-del-slot"></span>
       </span>
     </div>
-    <div class="group" id="t-browse" hidden>
-      <button id="t-prev-kid">◀ 이전 학생</button>
-      <span class="small" id="t-kid-pos"></span>
-      <button id="t-next-kid">다음 학생 ▶</button>
-      <button id="t-done" class="primary" hidden>확인 완료</button>
-    </div>
     <div class="group" role="group" aria-label="내보내기">
       <button class="t-menu-btn" data-menu="t-ex-menu" aria-expanded="false">내보내기 ▾</button>
       <span class="t-menu" id="t-ex-menu" hidden>
@@ -546,7 +539,14 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
         <button id="ex-pdf">공책 PDF</button>
       </span>
     </div>
-    <div class="group" role="group" aria-label="도장">
+
+    <div class="group"><button id="t-changes" aria-pressed="true">고친 부분 표시</button></div>
+    <div class="group" id="t-browse" hidden>
+      <button id="t-prev-kid">◀ 이전 학생</button>
+      <span class="small" id="t-kid-pos"></span>
+      <button id="t-next-kid">다음 학생 ▶</button>
+      <button id="t-done" class="primary" hidden>확인 완료</button>
+    </div>    <div class="group" role="group" aria-label="도장">
       <span class="label">도장</span>
       <button class="seal-btn" data-seal="참 잘했어요">참 잘했어요</button>
       <button class="seal-btn" data-seal="멋져요">멋져요</button>
@@ -598,7 +598,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 <div id="busy" hidden><div class="busy-box"><div class="spinner"></div><b id="busy-text">잠시만 기다려 주세요…</b><span class="small">끝날 때까지 공책을 넘기거나 나가지 말아 주세요.</span></div></div>
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=50"></script>
-<script type="module" src="app.js?v=50"></script>
+<script src="config.js?v=51"></script>
+<script type="module" src="app.js?v=51"></script>
 </body>
 </html>
