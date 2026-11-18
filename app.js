@@ -1936,6 +1936,7 @@ $('recover-close').addEventListener('click', () => { $('recover-box').hidden = t
 // student's app writes on the page: fbSeenAt (opened the page after feedback), edited (wrote on it),
 // repliedAt (answered in the chat). Pages stamped "다시 해 볼까요?" need fixing; for the rest, seeing is enough.
 const RETRY_SEAL = '다시 해 볼까요?';
+const FB_TRACK_START = Date.parse('2026-11-18T08:20:00Z');
 const FB_LABEL = { unseen: '미확인', retry: '다시 해 볼까요? · 안 고침', seen: '확인함', fixed: '고침·답장', ask: '학생 질문', done: '확인 완료' };
 let fbRows = [], fbFilter = 'unseen', fbLoadId = 0, fbMore = false;
 const hhmm = t => { const d = new Date(t), now = new Date(); const day = d.toDateString() === now.toDateString() ? '오늘' : (new Date(now - 86400000).toDateString() === d.toDateString() ? '어제' : `${d.getMonth() + 1}/${d.getDate()}`); return `${day} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
@@ -2036,7 +2037,8 @@ function renderFbStatus() {
     // only "seen" can be put away from the list. Unseen and not-yet-fixed stay until the student acts,
     // and fixed/replied is put away from the page itself, after the teacher has looked at the fix.
     if (g.cat === 'fixed' || g.cat === 'ask') { const s = document.createElement('span'); s.className = 'small'; s.textContent = g.cat === 'fixed' ? '눌러서 확인 →' : '눌러서 답장 →'; acts.append(s); }
-    if (g.cat === 'seen' || g.cat === 'done') {
+    // temporary: feedback given before seen-tracking existed (deploy 2026-11-18) can be put away by hand
+    if (g.cat === 'seen' || g.cat === 'done' || (g.cat === 'unseen' && g.t < FB_TRACK_START)) {
       const d = document.createElement('button'); d.textContent = g.cat === 'done' ? '다시 올리기' : '확인 완료';
       d.addEventListener('click', ev => { ev.stopPropagation(); setFbDone(g, g.cat !== 'done'); });
       acts.append(d);
