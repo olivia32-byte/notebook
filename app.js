@@ -1104,7 +1104,7 @@ function showPage(i) {
     touchStudent({ current: { nb: nb.id, nbName: nb.name, pg: pg.id, n: pg.n }, updated: Date.now() });
     if (!ownBook) { markNoticeSeen(nb.id, pg.id); setTimeout(checkNotices, 0); }
     let first = true, lastUpdated = null;
-    fbSince = pg.fbSeenAt || 0; fbSealAt = 0;
+    fbSince = pg.fbSeenFor || 0; fbSealAt = 0;
     pageSubs.push(R.fb(nb.id, pg.id).onSnapshot(d => {
       const data = d.exists ? d.data() : {};
       if (!first && data.updated === lastUpdated) return;
@@ -1514,7 +1514,7 @@ $('chat-form').addEventListener('submit', async e => {
     if (mode === 'teacher') { notifyStudent(tStudent, R, 'chat', nb, pages[pi], text); const r = browse && browse.rows && browse.rows[browse.i]; if (r && r.cat === 'ask' && r.pg === pages[pi].id) { r.cat = 'seen'; updateBrowseBar(); } }
     if (mode === 'student') {
       touchStudent({ lastMsgAt: at, updated: at });
-      const rp = pages[pi]; rp.repliedAt = at; if (!ownBook) R.page(nb.id, rp.id).update({ repliedAt: at }).catch(() => {});
+      const rp = pages[pi]; rp.repliedAt = at; rp.repliedFor = Math.max(rp.fbSeenFor || 0, 1); if (!ownBook) R.page(nb.id, rp.id).update({ repliedAt: at, repliedFor: rp.repliedFor }).catch(() => {});
       // a message on a brand-new blank page: save the page too, or the teacher can't open it to read the message
       if (!pages[pi]._sent) { pages[pi]._sent = true; dirty = true; flushSave(); }
     }
@@ -1965,6 +1965,7 @@ async function loadFbStatus() {
     if (!x.resend) g.t = Math.max(g.t, t); g.kinds.add(x.kind); if (x.kind === 'chat' && x.text) g.text = x.text; if (x.resend) g.resends++;
     if (!x.done) g.done = false;
     if (x.checkedAt) g.checked = Math.max(g.checked, x.checkedAt);
+    if (x.checkedEdit !== undefined) { g.checkedEdit = Math.max(g.checkedEdit || 0, x.checkedEdit); g.checkedReply = Math.max(g.checkedReply || 0, x.checkedReply || 0); }
     groups.set(key, g);
   }
   // questions: pages where the student wrote in the chat, found through the students who sent a message lately
@@ -1988,24 +1989,34 @@ async function loadFbStatus() {
     if (typeof p.n === 'number') g.n = p.n;
     g.seal = f.seal || ''; g.ink = (f.strokes || []).length > 0;
     g.seenAt = p.fbSeenAt || 0; g.edited = p.edited || 0; g.replied = p.repliedAt || 0;
-    const seen = g.seenAt >= g.t, fixed = g.edited > g.t, replied = g.replied > g.t;
-    // the teacher already looked at the fix (opened the page from this list) after the student's last change
-    const looked = g.checked && g.checked >= Math.max(g.edited, g.replied);
+    // the chat on this page, when there is any talk: who spoke last, and the teacher's last message
+    let msgs = [];
+    if (g.kinds.has('chat') || !g.t || (!g.ink && !g.seal)) {
+      const cs = await refs.chat(g.nb, g.pg).orderBy('at').get().catch(() => null);
+      msgs = cs ? cs.docs.map(d => d.data()) : [];
+    }
+    const tLast = msgs.reduce((m, x) => x.from === 't' ? Math.max(m, x.at || 0) : m, 0);
+    const lastMsg = msgs[msgs.length - 1];
+    // everything below compares the teacher's own times only (tablet clocks may be off by minutes)
+    const ref = Math.max(f.updated || 0, tLast);
+    const forT = v => ref > 0 && (v || 0) >= ref;
+    const seen = forT(p.fbSeenFor) || (!p.fbSeenFor && g.seenAt >= g.t);
+    const fixed = forT(p.editedFor) || (!p.editedFor && g.edited > g.t);
+    const replied = forT(p.repliedFor) || (!p.repliedFor && g.replied > g.t) || (!!lastMsg && lastMsg.from === 's' && (lastMsg.at || 0) > 0 && msgs.some(x => x.from === 't'));
+    g.isSeen = seen; g.isFixed = fixed; g.isReplied = replied;
+    // the teacher already looked at the fix (opened it from this list) and nothing changed since
+    const looked = g.checkedEdit !== undefined ? (g.checkedEdit >= g.edited && g.checkedReply >= g.replied) : (g.checked && g.checked >= Math.max(g.edited, g.replied));
     if (!g.t || (!g.ink && !g.seal)) {
-      // only talk on this page: whose turn is it? The student's last word is a question waiting for an answer
-      // a reply to the student's question counts as dealt with; a message the teacher started waits until the student opens it
-      const answered = g.replied && g.replied <= g.t;
-      g.cat = g.done ? 'done' : replied && !looked ? 'ask' : (!g.t || answered || seen) ? 'seen' : 'unseen';
+      // only talk on this page. The student's last word is a question waiting for an answer;
+      // a reply to the student counts as dealt with; a message the teacher started waits until the student opens it
+      const startedByStudent = msgs.length && msgs[0].from === 's';
+      if (lastMsg && lastMsg.from === 's') { g.cat = g.done ? 'done' : looked && g.checkedReply >= g.replied ? 'seen' : 'ask'; g.text = lastMsg.text || ''; }
+      else g.cat = g.done ? 'done' : (!g.t || startedByStudent || seen || forT(p.fbSeenFor)) ? 'seen' : 'unseen';
       if (!g.t && g.cat !== 'ask') g.missing = true;
       if (!g.t) g.t = g.replied;
     } else g.cat = g.done ? 'done' : !seen ? 'unseen' : (g.seal === RETRY_SEAL && !fixed) ? 'retry' : ((fixed || replied) && !looked) ? 'fixed' : 'seen';
     // only a "well done" seal and nothing else to read: not urgent, so it waits under "더보기"
     if (g.cat === 'unseen' && !g.ink && g.seal && g.seal !== RETRY_SEAL && !g.kinds.has('chat')) g.cat = 'pass';
-    if (g.cat === 'ask') {
-      const cs = await refs.chat(g.nb, g.pg).orderBy('at').get().catch(() => null);
-      const last = cs && cs.docs.length ? cs.docs[cs.docs.length - 1].data() : null;
-      if (last && last.from === 's') g.text = last.text || ''; else if (last) g.cat = 'seen';
-    }
   }));
   if (id !== fbLoadId) return;
   fbRows = list.filter(g => !g.missing).sort((a, b) => b.t - a.t);
@@ -2044,7 +2055,7 @@ function renderFbStatus() {
     const who = document.createElement('b'); who.textContent = `${g.st.num}번 ${g.st.name || ''}`;
     const what = document.createElement('span'); what.className = 'what';
     const kinds = g.cat === 'ask' ? `학생이 보낸 말: "${g.text || '…'}"` : [g.ink ? '빨간펜' : '', g.seal ? `도장 "${g.seal}"` : '', g.kinds.has('chat') ? `대화${g.text ? ' "' + g.text + '"' : ''}` : ''].filter(Boolean).join(' + ') || '피드백';
-    const extra = [g.seenAt >= g.t ? `${hhmm(g.seenAt)}에 열어 봄` : '', g.edited > g.t ? `${hhmm(g.edited)}에 고침` : '', g.replied > g.t ? '답장함' : '', g.resends ? `다시 알림 ${g.resends}번` : ''].filter(Boolean).join(' · ');
+    const extra = [g.isSeen && g.seenAt ? `${hhmm(g.seenAt)}에 열어 봄` : '', g.isFixed && g.edited ? `${hhmm(g.edited)}에 고침` : '', g.isReplied ? '답장함' : '', g.resends ? `다시 알림 ${g.resends}번` : ''].filter(Boolean).join(' · ');
     what.innerHTML = ''; what.append(`${g.nbName || '공책'} · ${g.n || '?'}쪽`);
     const sm = document.createElement('small'); sm.textContent = kinds + (extra ? ' · ' + extra : ''); what.append(sm);
     const tag = document.createElement('span'); tag.className = 'fb-tag ' + g.cat; tag.textContent = '● ' + (g.cat === 'retry' ? '열어만 봄' : FB_LABEL[g.cat]);
@@ -2084,8 +2095,8 @@ function setFbDone(g, done) {
 // the teacher opened a fixed/answered page from the list: that is the check, so it moves on to "확인함"
 function setFbChecked(g) {
   const st = students.find(s => s.id === g.st.id) || g.st, now = Date.now();
-  const notices = (Array.isArray(st.notices) ? st.notices : []).map(x => x.nb === g.nb && x.pg === g.pg && (x.kind === 'fb' || x.kind === 'chat') ? { ...x, checkedAt: now } : x);
-  st.notices = notices; g.checked = now; g.cat = 'seen';
+  const notices = (Array.isArray(st.notices) ? st.notices : []).map(x => x.nb === g.nb && x.pg === g.pg && (x.kind === 'fb' || x.kind === 'chat') ? { ...x, checkedAt: now, checkedEdit: g.edited || 0, checkedReply: g.replied || 0 } : x);
+  st.notices = notices; g.checked = now; g.checkedEdit = g.edited || 0; g.checkedReply = g.replied || 0; g.cat = 'seen';
   classRefs(classId, st.id).student.update({ notices }).catch(() => {});
 }
 function resendFb(list) {
@@ -2199,10 +2210,18 @@ let dirty = false, saveTimer = null, lastTouch = 0;
 // visit), when the teacher's feedback was last saved (teacher view), and whether to show what changed
 let fbSince = 0, fbSealAt = 0, fbUpdated = 0, showChanges = lsGet('dn-show-changes') !== false;
 // the student has the page with feedback open: remember on the page itself (the teacher's 피드백 현황 reads it)
+// Tablets' clocks differ from the teacher's, so what was seen is kept as the teacher's own time of that
+// feedback (fbSeenFor), never compared with the tablet's clock; fbSeenAt (tablet time) is only for showing.
+// teacher: the student's strokes newer than this (tablet time) were written after seeing the latest feedback
+function changesSince() {
+  const pg = pages[pi];
+  if (pg && pg.fbSeenFor && pg.fbSeenAt) return pg.fbSeenFor >= fbUpdated ? pg.fbSeenAt : Infinity;
+  return fbUpdated;
+}
 function markFbSeen(pg, t) {
-  if (mode !== 'student' || ownBook || !pg || !nb || (pg.fbSeenAt || 0) >= t) return;
-  pg.fbSeenAt = Date.now();
-  R.page(nb.id, pg.id).update({ fbSeenAt: pg.fbSeenAt }).catch(() => {});
+  if (mode !== 'student' || ownBook || !pg || !nb || !t || (pg.fbSeenFor || 0) >= t) return;
+  pg.fbSeenAt = Date.now(); pg.fbSeenFor = t;
+  R.page(nb.id, pg.id).update({ fbSeenAt: pg.fbSeenAt, fbSeenFor: t }).catch(() => {});
 }
 function setSave(text, err) { const el = $('save'); el.textContent = text; el.classList.toggle('err', !!err); }
 function markDirty() { dirty = true; setSave('저장 중…'); clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 2500); }
@@ -2229,9 +2248,10 @@ function flushSave() {
     fbBase = { pg, ink, seal, sealAt: body.sealAt };
     job = () => refs.fb(book.id, pg.id).set(body).then(() => { if (added) notifyStudent(st, refs, 'fb', book, pg); });
   } else {
-    pg.edited = Date.now();
+    pg.edited = Date.now(); pg.editedFor = pg.fbSeenFor || 0;
     const body = { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H, bg: pg.bg || 0, bgSrc: pg.bg ? (pg.bgSrc || '') : '',
-      edited: pg.edited, fbSeenAt: pg.fbSeenAt || 0, repliedAt: pg.repliedAt || 0 };
+      edited: pg.edited, fbSeenAt: pg.fbSeenAt || 0, repliedAt: pg.repliedAt || 0,
+      fbSeenFor: pg.fbSeenFor || 0, editedFor: pg.editedFor || 0, repliedFor: pg.repliedFor || 0 };
     if (pg.handout) body.handout = pg.handout;
     book.updated = today(); book.pages = pages.length;
     // every write is started right now (not one after another's answer)
@@ -2428,7 +2448,7 @@ function redraw() {
   // teacher: a soft green glow under what the student wrote after the last feedback
   if (mode === 'teacher' && showChanges && fbUpdated && base.length) {
     fctx.setTransform(1, 0, 0, 1, vx(), vy());
-    for (const s of base) if (s.at > fbUpdated && !s.erase) drawStroke(fctx, glow(s, 'rgba(60,200,100,.38)'));
+    for (const s of base) if (s.at > changesSince() && !s.erase) drawStroke(fctx, glow(s, 'rgba(60,200,100,.38)'));
     fctx.setTransform(1, 0, 0, 1, 0, 0);
   }
   if (base.length) fctx.drawImage(offBase, 0, 0);
