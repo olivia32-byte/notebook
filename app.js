@@ -1949,7 +1949,7 @@ $('recover-close').addEventListener('click', () => { $('recover-box').hidden = t
 // repliedAt (answered in the chat). Pages stamped "다시 해 볼까요?" need fixing; for the rest, seeing is enough.
 const RETRY_SEAL = '다시 해 볼까요?';
 const FB_TRACK_START = Date.parse('2026-11-18T08:20:00Z');
-const FB_LABEL = { unseen: '미확인', retry: '다시 해 볼까요? · 안 고침', seen: '확인함', fixed: '고침·답장', ask: '학생 질문', pass: '미확인 · 칭찬 도장만', done: '확인 완료' };
+const FB_LABEL = { unseen: '미확인', retry: '안 고침', seen: '확인함', fixed: '고침·답장', ask: '학생 질문', pass: '미확인 · 칭찬 도장만', done: '확인 완료' };
 let fbRows = [], fbFilter = 'unseen', fbLoadId = 0, fbMore = false;
 const hhmm = t => { const d = new Date(t), now = new Date(); const day = d.toDateString() === now.toDateString() ? '오늘' : (new Date(now - 86400000).toDateString() === d.toDateString() ? '어제' : `${d.getMonth() + 1}/${d.getDate()}`); return `${day} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
 async function loadFbStatus() {
@@ -2005,6 +2005,8 @@ async function loadFbStatus() {
     const replied = forT(p.repliedFor) || (!p.repliedFor && g.replied > g.t) || (!!lastMsg && lastMsg.from === 's' && (lastMsg.at || 0) > 0 && msgs.some(x => x.from === 't'));
     g.isSeen = seen; g.isFixed = fixed; g.isReplied = replied;
     // the teacher already looked at the fix (opened it from this list) and nothing changed since
+    // to be fixed: the "다시 해 볼까요?" seal, or red pen with no seal (a praise seal means it is fine as it is)
+    const needsFix = g.seal === RETRY_SEAL || (g.ink && !g.seal);
     const looked = g.checkedEdit !== undefined ? (g.checkedEdit >= g.edited && g.checkedReply >= g.replied) : (g.checked && g.checked >= Math.max(g.edited, g.replied));
     if (!g.t || (!g.ink && !g.seal)) {
       // only talk on this page. The student's last word is a question waiting for an answer;
@@ -2014,7 +2016,7 @@ async function loadFbStatus() {
       else g.cat = g.done ? 'done' : (!g.t || startedByStudent || seen || forT(p.fbSeenFor)) ? 'seen' : 'unseen';
       if (!g.t && g.cat !== 'ask') g.missing = true;
       if (!g.t) g.t = g.replied;
-    } else g.cat = g.done ? 'done' : !seen ? 'unseen' : (g.seal === RETRY_SEAL && !fixed) ? 'retry' : ((fixed || replied) && !looked) ? 'fixed' : 'seen';
+    } else g.cat = g.done ? 'done' : !seen ? 'unseen' : (needsFix && !fixed) ? 'retry' : ((fixed || replied) && !looked) ? 'fixed' : 'seen';
     // only a "well done" seal and nothing else to read: not urgent, so it waits under "더보기"
     // or the newest thing the teacher did was to give a praise seal (e.g. after checking a fix, 다시 해 볼까요? → 참 잘했어요):
     // the red pen and talk before it were already seen, so this too waits under "더보기"
@@ -2048,7 +2050,7 @@ function renderFbStatus() {
   $('fb-hint').textContent = {
     unseen: '빨간펜·대화·"다시 해 볼까요?" 도장을 받고 아직 그 쪽을 열어 보지 않은 학생이에요.',
     pass: '칭찬 도장만 받고 아직 열어 보지 않았어요. 급하지 않아서 여기에 모아 두었어요.',
-    retry: '"다시 해 볼까요?" 도장을 받고 열어 봤지만 아직 고치지 않은 학생이에요.',
+    retry: '"다시 해 볼까요?" 도장이나 빨간펜(도장 없이)을 받고 열어 봤지만 아직 고치지 않은 학생이에요.',
     seen: '열어 봤어요. 다시 해 볼까요? 도장이 아니면 이걸로 충분해요.',
     fixed: '피드백 뒤에 고쳐 쓰거나 대화로 답한 학생이에요. 눌러서 고친 곳(초록)을 보면 "확인함"으로 넘어가요.',
     ask: '학생이 대화로 보낸 말에 아직 답하지 않았어요. 눌러서 답하면 "확인함"으로 넘어가요.',
