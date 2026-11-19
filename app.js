@@ -2016,7 +2016,13 @@ async function loadFbStatus() {
       if (!g.t) g.t = g.replied;
     } else g.cat = g.done ? 'done' : !seen ? 'unseen' : (g.seal === RETRY_SEAL && !fixed) ? 'retry' : ((fixed || replied) && !looked) ? 'fixed' : 'seen';
     // only a "well done" seal and nothing else to read: not urgent, so it waits under "더보기"
-    if (g.cat === 'unseen' && !g.ink && g.seal && g.seal !== RETRY_SEAL && !g.kinds.has('chat')) g.cat = 'pass';
+    // or the newest thing the teacher did was to give a praise seal (e.g. after checking a fix, 다시 해 볼까요? → 참 잘했어요):
+    // the red pen and talk before it were already seen, so this too waits under "더보기"
+    const inkAt = (f.strokes || []).reduce((m, s) => s.t === 'e' ? m : Math.max(m, (s.a || 0) * 1000), 0);
+    const sealAt = f.sealAt || 0;
+    const prevSeen = (p.fbSeenFor || 0) >= Math.max(inkAt, tLast) || !!g.checked || fixed;
+    const praiseLast = g.seal && g.seal !== RETRY_SEAL && sealAt && inkAt <= sealAt + 1000 && tLast <= sealAt && prevSeen;
+    if (g.cat === 'unseen' && g.seal && g.seal !== RETRY_SEAL && ((!g.ink && !g.kinds.has('chat')) || praiseLast)) g.cat = 'pass';
   }));
   if (id !== fbLoadId) return;
   fbRows = list.filter(g => !g.missing).sort((a, b) => b.t - a.t);
