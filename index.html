@@ -193,6 +193,10 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 .inbox h2 { font-size: 17px; }
 .inbox.calm { background: var(--bar); border: 1px solid var(--line); color: var(--fg); }
 #inbox-list, #inbox-read { display: grid; gap: 6px; }
+.inbox-nb { display: grid; gap: 6px; }
+.inbox-nb + .inbox-nb { margin-top: 6px; }
+.inbox-nb-head { font-weight: 700; font-size: 15px; display: flex; gap: 8px; align-items: center; }
+.inbox-nb-head .cnt { font-weight: 500; font-size: 13px; opacity: .7; }
 .inbox-row { display: flex; gap: 6px; align-items: stretch; }
 .inbox-main { flex: 1; min-width: 0; display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; text-align: left; background: #fff; border: 1px solid #f3d27a; border-radius: 10px; padding: 10px 12px; color: #3a2a00; }
 .inbox-row.read .inbox-main { background: var(--bar); border-color: var(--line); color: var(--fg); opacity: .85; }
@@ -598,7 +602,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 <div id="busy" hidden><div class="busy-box"><div class="spinner"></div><b id="busy-text">잠시만 기다려 주세요…</b><span class="small">끝날 때까지 공책을 넘기거나 나가지 말아 주세요.</span></div></div>
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=54"></script>
-<script type="module" src="app.js?v=54"></script>
+<script src="config.js?v=55"></script>
+<script type="module" src="app.js?v=55"></script>
 </body>
 </html>

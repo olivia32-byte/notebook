@@ -885,12 +885,12 @@ function hiddenSet() {
   if (!noticeHidden) noticeHidden = new Set(lsGet(noticeKey + '-hidden') || []);
   return noticeHidden;
 }
-function noticeRow(x, read) {
+function noticeRow(x, read, inGroup) {
   const row = document.createElement('div'); row.className = 'inbox-row' + (read ? ' read' : '');
   const main = document.createElement('button'); main.className = 'inbox-main';
   const ico = document.createElement('span'); ico.className = 'ico' + (x.kind === 'chat' ? ' chat' : ''); ico.textContent = x.kind === 'chat' ? '💬' : '✎';
   const what = document.createElement('span'); what.className = 'what';
-  const t = document.createElement('b'); t.textContent = `${x.nbName || '공책'} ${x.n ? x.n + '쪽' : ''}`.trim();
+  const t = document.createElement('b'); t.textContent = inGroup ? (x.n ? x.n + '쪽' : '쪽') : `${x.nbName || '공책'} ${x.n ? x.n + '쪽' : ''}`.trim();
   const d = document.createElement('span');
   d.textContent = `${x.kind === 'chat' ? `메시지 "${x.text}"` : '선생님 피드백'} · ${ago(x.at)}`;
   what.append(t, d);
@@ -905,6 +905,20 @@ function noticeRow(x, read) {
   }
   return row;
 }
+// notices grouped by notebook (the notebook with the newest notice first), each with its pages under it
+function appendByNotebook(box, list, read) {
+  const groups = new Map();
+  for (const x of list) { const k = x.nb || '?'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(x); }
+  for (const items of groups.values()) {
+    const sec = document.createElement('div'); sec.className = 'inbox-nb';
+    const h = document.createElement('div'); h.className = 'inbox-nb-head';
+    h.textContent = `📒 ${items[0].nbName || '공책'}`;
+    const c = document.createElement('span'); c.className = 'cnt'; c.textContent = `${items.length}개`; h.append(c);
+    sec.append(h);
+    for (const x of items) sec.append(noticeRow(x, read, true));
+    box.append(sec);
+  }
+}
 function renderInbox() {
   const box = $('inbox-list'), more = $('inbox-read'); box.textContent = ''; more.textContent = '';
   const show = !ownBook && mode === 'student' && !!noticeKey;
@@ -914,11 +928,11 @@ function renderInbox() {
   $('inbox').classList.toggle('calm', !unread.length);
   $('inbox-count').textContent = unread.length; $('inbox-count').hidden = !unread.length;
   $('inbox-none').hidden = unread.length > 0;
-  for (const x of unread) box.append(noticeRow(x, false));
+  appendByNotebook(box, unread, false);
   $('inbox-more').hidden = !read.length;
   $('inbox-more').textContent = inboxMore ? '읽은 피드백 접기' : `읽은 피드백 더보기 (${read.length})`;
   more.hidden = !inboxMore;
-  if (inboxMore) for (const x of read) more.append(noticeRow(x, true));
+  if (inboxMore) appendByNotebook(more, read, true);
 }
 $('inbox-more').addEventListener('click', () => { inboxMore = !inboxMore; renderInbox(); });
 
@@ -2007,6 +2021,7 @@ async function loadFbStatus() {
     // the teacher already looked at the fix (opened it from this list) and nothing changed since
     // to be fixed: the "다시 해 볼까요?" seal, or red pen with no seal (a praise seal means it is fine as it is)
     const needsFix = g.seal === RETRY_SEAL || (g.ink && !g.seal);
+    g.needsFix = needsFix;
     const looked = g.checkedEdit !== undefined ? (g.checkedEdit >= g.edited && g.checkedReply >= g.replied) : (g.checked && g.checked >= Math.max(g.edited, g.replied));
     if (!g.t || (!g.ink && !g.seal)) {
       // only talk on this page. The student's last word is a question waiting for an answer;
@@ -2016,7 +2031,7 @@ async function loadFbStatus() {
       else g.cat = g.done ? 'done' : (!g.t || startedByStudent || seen || forT(p.fbSeenFor)) ? 'seen' : 'unseen';
       if (!g.t && g.cat !== 'ask') g.missing = true;
       if (!g.t) g.t = g.replied;
-    } else g.cat = g.done ? 'done' : !seen ? 'unseen' : (needsFix && !fixed) ? 'retry' : ((fixed || replied) && !looked) ? 'fixed' : 'seen';
+    } else g.cat = g.done ? 'done' : !seen ? 'unseen' : (needsFix && !fixed) ? 'retry' : (((needsFix && fixed) || replied) && !looked) ? 'fixed' : 'seen';
     // only a "well done" seal and nothing else to read: not urgent, so it waits under "더보기"
     // or the newest thing the teacher did was to give a praise seal (e.g. after checking a fix, 다시 해 볼까요? → 참 잘했어요):
     // the red pen and talk before it were already seen, so this too waits under "더보기"
@@ -2063,7 +2078,7 @@ function renderFbStatus() {
     const who = document.createElement('b'); who.textContent = `${g.st.num}번 ${g.st.name || ''}`;
     const what = document.createElement('span'); what.className = 'what';
     const kinds = g.cat === 'ask' ? `학생이 보낸 말: "${g.text || '…'}"` : [g.ink ? '빨간펜' : '', g.seal ? `도장 "${g.seal}"` : '', g.kinds.has('chat') ? `대화${g.text ? ' "' + g.text + '"' : ''}` : ''].filter(Boolean).join(' + ') || '피드백';
-    const extra = [g.isSeen && g.seenAt ? `${hhmm(g.seenAt)}에 열어 봄` : '', g.isFixed && g.edited ? `${hhmm(g.edited)}에 고침` : '', g.isReplied ? '답장함' : '', g.resends ? `다시 알림 ${g.resends}번` : ''].filter(Boolean).join(' · ');
+    const extra = [g.isSeen && g.seenAt ? `${hhmm(g.seenAt)}에 열어 봄` : '', g.isFixed && g.needsFix && g.edited ? `${hhmm(g.edited)}에 고침` : '', g.isReplied ? '답장함' : '', g.resends ? `다시 알림 ${g.resends}번` : ''].filter(Boolean).join(' · ');
     what.innerHTML = ''; what.append(`${g.nbName || '공책'} · ${g.n || '?'}쪽`);
     const sm = document.createElement('small'); sm.textContent = kinds + (extra ? ' · ' + extra : ''); what.append(sm);
     const tag = document.createElement('span'); tag.className = 'fb-tag ' + g.cat; tag.textContent = '● ' + (g.cat === 'retry' ? '열어만 봄' : FB_LABEL[g.cat]);
