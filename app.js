@@ -2016,9 +2016,22 @@ const FB_TRACK_START = Date.parse('2026-11-18T08:20:00Z');
 const FB_LABEL = { unseen: '미확인', retry: '안 고침', seen: '확인함', fixed: '고침·답장', ask: '학생 질문', pass: '미확인 · 칭찬 도장만', done: '확인 완료' };
 let fbRows = [], fbFilter = 'unseen', fbLoadId = 0, fbMore = false, fbFolded = new Set(lsGet('dn-fb-folded') || []);
 const hhmm = t => { const d = new Date(t), now = new Date(); const day = d.toDateString() === now.toDateString() ? '오늘' : (new Date(now - 86400000).toDateString() === d.toDateString() ? '어제' : `${d.getMonth() + 1}/${d.getDate()}`); return `${day} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
+// Two passes: first from what the device already keeps (shows at once), then fresh from the server.
+// Every read in a pass goes out together, so the wait is a few round trips, not one per student.
 async function loadFbStatus() {
   const id = ++fbLoadId, days = +$('fb-days').value || 0, since = days ? Date.now() - days * 86400000 : 0;
   $('fb-status').textContent = '불러오는 중…';
+  const cached = await fbPass(since, r => r.getCache ? r.getCache() : null).catch(() => null);
+  if (id !== fbLoadId) return;
+  if (cached && cached.length) { fbRows = cached; renderFbStatus(); $('fb-status').textContent = '새 소식 확인 중…'; }
+  const fresh = await fbPass(since, r => r.get()).catch(() => null);
+  if (id !== fbLoadId) return;
+  if (fresh) fbRows = fresh;
+  $('fb-status').textContent = fresh ? '' : '인터넷이 느려서 저장된 내용만 보여요';
+  renderFbStatus();
+}
+async function fbPass(since, read) {
+  const rd = r => Promise.resolve().then(() => read(r)).catch(() => null);
   const groups = new Map();
   for (const st of students) for (const x of (Array.isArray(st.notices) ? st.notices : [])) {
     if (x.kind !== 'fb' && x.kind !== 'chat') continue;
@@ -2035,9 +2048,9 @@ async function loadFbStatus() {
   // questions: pages where the student wrote in the chat, found through the students who sent a message lately
   await Promise.all(students.filter(st => (st.lastMsgAt || 0) > since).map(async st => {
     const refs = classRefs(classId, st.id);
-    const bs = await refs.books.get().catch(() => null); if (!bs) return;
+    const bs = await rd(refs.books); if (!bs) return;
     await Promise.all(bs.docs.filter(d => !d.data().deletedAt).map(async d => {
-      const ps = await refs.pages(d.id).where('repliedAt', '>', since).get().catch(() => null); if (!ps) return;
+      const ps = await rd(refs.pages(d.id).where('repliedAt', '>', since)); if (!ps) return;
       for (const p of ps.docs) {
         const key = st.id + '/' + d.id + '/' + p.id;
         if (!groups.has(key)) groups.set(key, { key, st, nb: d.id, nbName: d.data().name || '', pg: p.id, n: p.data().n, t: 0, kinds: new Set(), text: '', resends: 0, done: false, checked: 0 });
@@ -2047,7 +2060,9 @@ async function loadFbStatus() {
   const list = [...groups.values()];
   await Promise.all(list.map(async g => {
     const refs = classRefs(classId, g.st.id);
-    const [pd, fd] = await Promise.all([refs.page(g.nb, g.pg).get().catch(() => null), refs.fb(g.nb, g.pg).get().catch(() => null)]);
+    // the chat is fetched alongside when the notices already say there was talk
+    const talk = g.kinds.has('chat') || !g.t;
+    const [pd, fd, cs0] = await Promise.all([rd(refs.page(g.nb, g.pg)), rd(refs.fb(g.nb, g.pg)), talk ? rd(refs.chat(g.nb, g.pg).orderBy('at')) : null]);
     const p = pd && pd.exists ? pd.data() : {}, f = fd && fd.exists ? fd.data() : {};
     g.missing = !(pd && pd.exists);
     if (typeof p.n === 'number') g.n = p.n;
@@ -2057,8 +2072,8 @@ async function loadFbStatus() {
     g.seenAt = p.fbSeenAt || 0; g.edited = p.edited || 0; g.replied = p.repliedAt || 0;
     // the chat on this page, when there is any talk: who spoke last, and the teacher's last message
     let msgs = [];
-    if (g.kinds.has('chat') || !g.t || (!g.ink && !g.seal && !g.stampAt)) {
-      const cs = await refs.chat(g.nb, g.pg).orderBy('at').get().catch(() => null);
+    if (talk || (!g.ink && !g.seal && !g.stampAt)) {
+      const cs = talk ? cs0 : await rd(refs.chat(g.nb, g.pg).orderBy('at'));
       msgs = cs ? cs.docs.map(d => d.data()) : [];
     }
     const tLast = msgs.reduce((m, x) => x.from === 't' ? Math.max(m, x.at || 0) : m, 0);
@@ -2093,10 +2108,7 @@ async function loadFbStatus() {
     const praiseLast = g.praise && sealAt && inkAt <= sealAt + 1000 && tLast <= sealAt && prevSeen;
     if (g.cat === 'unseen' && g.praise && g.seal !== RETRY_SEAL && ((!g.ink && !g.kinds.has('chat')) || praiseLast)) g.cat = 'pass';
   }));
-  if (id !== fbLoadId) return;
-  fbRows = list.filter(g => !g.missing).sort((a, b) => b.t - a.t);
-  $('fb-status').textContent = '';
-  renderFbStatus();
+  return list.filter(g => !g.missing).sort((a, b) => b.t - a.t);
 }
 function renderFbStatus() {
   const count = c => fbRows.filter(g => c === 'all' ? g.cat !== 'done' : g.cat === c).length;
