@@ -2375,19 +2375,34 @@ function drawHighlight(c, s, k) {
   for (let i = 1; i < pts.length; i++) c.lineTo(pts[i].x * k, pts[i].y * k);
   c.stroke(); c.restore();
 }
+// on screen, ink never goes past the edge of the page (zoomed out, the grey desk around it stays empty)
+function pageClip(c, k) {
+  if (k !== view || !(c === ctx || c === lctx || c === bctx || c === ectx || c === octx || c === fctx)) return false;
+  c.save(); c.beginPath(); c.rect(0, 0, PAGE_W * k, PAGE_H * k); c.clip(); return true;
+}
 function seg(c, s, a, b, k = view) {
+  const cl = pageClip(c, k);
   c.strokeStyle = inkMode(c, s); c.lineCap = 'round'; c.lineJoin = 'round';
   c.lineWidth = widthFor(s, (a.p + b.p) / 2) * k;
   c.beginPath(); c.moveTo(a.x * k, a.y * k); c.lineTo(b.x * k, b.y * k); c.stroke();
+  if (cl) c.restore();
 }
 function dotAt(c, s, a, k = view) {
+  const cl = pageClip(c, k);
   c.fillStyle = inkMode(c, s);
   c.beginPath(); c.arc(a.x * k, a.y * k, widthFor(s, a.p) * k / 2, 0, Math.PI * 2); c.fill();
+  if (cl) c.restore();
 }
 // A finished stroke is drawn as a few long paths instead of one tiny path per segment: neighbouring
 // segments whose width differs by less than a quarter of a screen pixel share one path. Redrawing a page
 // full of writing (after zooming, turning a page) became several times faster.
 function drawStroke(c, s, k = view) {
+  if (!s.pts.length) return;
+  const cl = pageClip(c, k);
+  drawStrokeIn(c, s, k);
+  if (cl) c.restore();
+}
+function drawStrokeIn(c, s, k) {
   if (s.hl) { drawHighlight(c, s, k); return; }
   const pts = s.pts; if (!pts.length) return;
   if (pts.length === 1) { dotAt(c, s, pts[0], k); return; }
