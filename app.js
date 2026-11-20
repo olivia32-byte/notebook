@@ -35,12 +35,33 @@ const KO_ERR = {
 };
 const errText = e => KO_ERR[e && e.code] || ('문제가 생겼어요' + (e && e.code ? ` (${e.code})` : ''));
 
+/* ================= stamps ================= */
+// drawn from 24×24 outlines, filled with one colour; pts holds the centre so code that looks at points still works
+const STAMPS = {
+  heart: { color: '#e0453a', path: 'M12 21s-7.5-4.6-9.6-9.2C.9 8.4 3 4.5 6.7 4.5c2.2 0 3.6 1.3 4.3 2.6.7-1.3 2.1-2.6 4.3-2.6 3.7 0 5.8 3.9 4.3 7.3C19.5 16.4 12 21 12 21z' },
+  star: { color: '#f2b400', path: 'M12 1.8l3.1 6.4 7 .9-5.2 4.8 1.4 6.9L12 17.3l-6.3 3.5 1.4-6.9-5.2-4.8 7-.9z' },
+  thumb: { color: '#f08c1a', path: 'M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z' },
+};
+const stampPaths = {};
+function mkStamp(kind, x, y, size, color, at, enc) {
+  return { stamp: STAMPS[kind] ? kind : 'star', x, y, size: size || 48, color: color || (STAMPS[kind] || STAMPS.star).color, at: at || 0, pts: [{ x, y, p: 0.5 }], erase: false, hl: false, ...(enc ? { _enc: enc } : {}) };
+}
+function drawStamp(c, s, k) {
+  const P = stampPaths[s.stamp] || (stampPaths[s.stamp] = new Path2D(STAMPS[s.stamp].path));
+  const w = s.size * k;
+  c.save(); c.globalCompositeOperation = 'source-over';
+  c.translate(s.x * k - w / 2, s.y * k - w / 2); c.scale(w / 24, w / 24);
+  c.fillStyle = s.color; c.fill(P); c.restore();
+}
+
 /* ================= stroke encoding ================= */
 // Points are stored to 1/8 of a page unit (was 1/2). At 1/2 the points snapped to a coarse grid, which
 // was invisible while writing but made a reopened stroke wobble, most of all on a zoomed-in page.
 // Strokes saved before carry no "q" and are read the old way.
 const ENC_Q = 8, ENC_PQ = 50;
 function encode(s) {
+  // a stamp (heart, star, thumbs-up): its centre and its width; only two numbers in "d", so an older app shows nothing
+  if (s.stamp) { const o = { c: s.color, s: Math.round(s.size * 10) / 10, t: 's', k: s.stamp, q: ENC_Q, d: `${Math.round(s.x * ENC_Q)},${Math.round(s.y * ENC_Q)}` }; if (s.at) o.a = Math.round(s.at / 1000); return o; }
   let px = 0, py = 0, pp = 0; const out = [];
   for (const p of s.pts) {
     const X = Math.round(p.x * ENC_Q), Y = Math.round(p.y * ENC_Q), P = Math.round(p.p * ENC_PQ);
@@ -52,6 +73,7 @@ function encode(s) {
 }
 function encodeCached(s) { return s === current ? encode(s) : (s._enc || (s._enc = encode(s))); }
 function decode(o) {
+  if (o.t === 's') { const [X, Y] = (o.d || '0,0').split(',').map(Number), q = o.q || ENC_Q; return mkStamp(o.k, X / q, Y / q, o.s, o.c, o.a ? o.a * 1000 : 0, o); }
   const n = o.d ? o.d.split(',').map(Number) : []; const pts = [];
   const q = o.q || 2, pq = o.q ? ENC_PQ : 20;
   let X = 0, Y = 0, P = 0;
@@ -770,6 +792,11 @@ let ready = true;
 let pageSubs = [];
 let tNotebooks = [];
 let color = '#1b1b1b', size = 4, tool = 'pen';
+// the stamp just put down (it can be moved and resized until something else is touched)
+let stampSel = null, stampFrame = 0;
+const selBox = document.createElement('div'); selBox.id = 'stamp-sel'; selBox.hidden = true;
+const selHandle = document.createElement('i'); selBox.append(selHandle);
+$('over').append(selBox);
 // Palm rejection can only tell a pen from a hand once this tablet has reported a pen. That used to be
 // forgotten on every reload, so until a student's first pen stroke, fingers and palms drew too.
 // Now a pen seen once (even hovering) is remembered on this tablet.
@@ -789,7 +816,7 @@ function clearPageSubs() { pageSubs.forEach(u => u()); pageSubs = []; }
 const NOTICE_KEEP = 60, NOTICE_GAP = 90 * 1000;
 let fbBase = null;
 const inkCount = arr => arr.reduce((t, x) => t + (x.erase ? 0 : 1), 0);
-function notifyStudent(st, refs, kind, book, pg, text, force) {
+function notifyStudent(st, refs, kind, book, pg, text, force, extra) {
   if (!st || !refs || !refs.student || ownBook || !book || !pg) return;
   const live = (typeof students !== 'undefined' && students.find(x => x.id === st.id)) || st;
   const list = Array.isArray(live.notices) ? live.notices.slice() : [];
@@ -798,14 +825,15 @@ function notifyStudent(st, refs, kind, book, pg, text, force) {
   // A sitting ends after 90 seconds without saving; feedback after that is a new notice of its own.
   const prev = kind === 'fb' && list.slice().reverse().find(x => x.kind === 'fb' && x.pg === pg.id);
   if (prev && !force && now - (prev.last || prev.at) < NOTICE_GAP) {
-    if (now - (prev.last || prev.at) < 30000) return;
-    prev.last = now;
+    const flagChanged = extra && 'fix' in extra && prev.fix !== extra.fix;
+    if (now - (prev.last || prev.at) < 30000 && !flagChanged) return;
+    prev.last = now; if (extra) Object.assign(prev, extra);
     const notices = list.slice(-NOTICE_KEEP);
     live.notices = notices; st.notices = notices;
     refs.student.update({ notices }).catch(() => {});
     return;
   }
-  list.push({ at: now, kind, nb: book.id, nbName: book.name || '', pg: pg.id, n: pg.n || 0, text: (text || '').slice(0, 60), ...(force ? { resend: true } : {}) });
+  list.push({ at: now, kind, nb: book.id, nbName: book.name || '', pg: pg.id, n: pg.n || 0, text: (text || '').slice(0, 60), ...(force ? { resend: true } : {}), ...(extra || {}) });
   const notices = list.slice(-NOTICE_KEEP);
   live.notices = notices; st.notices = notices;
   // say so on the teacher's screen, so it is clear the notice went (or why it did not)
@@ -828,6 +856,15 @@ function startNotices() {
 function stopNotices() { if (noticeUnsub) noticeUnsub(); noticeUnsub = null; noticeList = []; noticeKey = ''; hideNotice(); }
 const noticeId = x => x.nb + '/' + x.pg + '/' + x.kind;
 function isUnseen(x) { return x.at > (noticeSeen[noticeId(x)] || 0); }
+// praise only (a well-done seal or stamp, nothing to fix): listed without a highlight and put away with 확인 완료
+const isQuiet = x => x.kind === 'fb' && x.fix === false;
+function okNotice(x) {
+  noticeSeen[noticeId(x)] = Math.max(noticeSeen[noticeId(x)] || 0, x.at); lsPut(noticeKey, noticeSeen);
+  // the teacher's 피드백 현황 counts it as seen too
+  const t = x.last || x.at;
+  R.page(x.nb, x.pg).update({ fbSeenFor: t, fbSeenAt: Date.now() }).catch(() => {});
+  renderInbox(); checkNotices();
+}
 function markNoticeSeen(nbId, pgId) {
   let changed = false;
   for (const x of noticeList) if (x.nb === nbId && (!pgId || x.pg === pgId) && isUnseen(x)) { noticeSeen[noticeId(x)] = x.at; changed = true; }
@@ -842,7 +879,7 @@ function checkNotices() {
   // a notice for the page already on screen still shows: the student may not notice a stamp or a
   // message appearing; it is checked off with 확인 (or by opening the page again later)
   if (!$('shelf').hidden) renderShelf();
-  const fresh = noticeList.filter(x => isUnseen(x) && !noticeDismissed.has(noticeId(x) + '@' + x.at)).sort((a, b) => b.at - a.at);
+  const fresh = noticeList.filter(x => isUnseen(x) && !isQuiet(x) && !noticeDismissed.has(noticeId(x) + '@' + x.at)).sort((a, b) => b.at - a.at);
   if (!fresh.length) { hideNotice(); return; }
   const top = fresh[0];
   if (noticeShown && noticeShown.at === top.at) return;
@@ -889,18 +926,24 @@ function hiddenSet() {
   return noticeHidden;
 }
 function noticeRow(x, read, inGroup) {
-  const row = document.createElement('div'); row.className = 'inbox-row' + (read ? ' read' : '');
+  const quiet = !read && isQuiet(x);
+  const row = document.createElement('div'); row.className = 'inbox-row' + (read ? ' read' : '') + (quiet ? ' quiet' : '');
   const main = document.createElement('button'); main.className = 'inbox-main';
-  const ico = document.createElement('span'); ico.className = 'ico' + (x.kind === 'chat' ? ' chat' : ''); ico.textContent = x.kind === 'chat' ? '💬' : '✎';
+  const ico = document.createElement('span'); ico.className = 'ico' + (x.kind === 'chat' ? ' chat' : ''); ico.textContent = x.kind === 'chat' ? '💬' : x.fix === false ? '★' : '✎';
   const what = document.createElement('span'); what.className = 'what';
   const t = document.createElement('b'); t.textContent = inGroup ? (x.n ? x.n + '쪽' : '쪽') : `${x.nbName || '공책'} ${x.n ? x.n + '쪽' : ''}`.trim();
   const d = document.createElement('span');
-  d.textContent = `${x.kind === 'chat' ? `메시지 "${x.text}"` : '선생님 피드백'} · ${ago(x.at)}`;
+  d.textContent = `${x.kind === 'chat' ? `메시지 "${x.text}"` : x.fix === false ? '칭찬' : '선생님 피드백'} · ${ago(x.at)}`;
   what.append(t, d);
   const go = document.createElement('span'); go.className = 'go'; go.textContent = read ? '다시 보기 →' : '보러 가기 →';
   main.append(ico, what, go);
   main.addEventListener('click', () => goToNotice(x));
   row.append(main);
+  if (quiet) {
+    const ok = document.createElement('button'); ok.className = 'inbox-ok'; ok.textContent = '확인 완료';
+    ok.addEventListener('click', () => okNotice(x));
+    row.append(ok);
+  }
   if (read) {
     const del = document.createElement('button'); del.className = 'inbox-del'; del.textContent = '지우기';
     del.addEventListener('click', () => { const h = hiddenSet(); h.add(noticeUid(x)); lsPut(noticeKey + '-hidden', [...h].slice(-300)); renderInbox(); });
@@ -928,8 +971,9 @@ function renderInbox() {
   const all = show ? noticeList.filter(x => !hiddenSet().has(noticeUid(x))).sort((a, b) => b.at - a.at) : [];
   const unread = all.filter(isUnseen), read = all.filter(x => !isUnseen(x));
   $('inbox').hidden = !all.length;
-  $('inbox').classList.toggle('calm', !unread.length);
-  $('inbox-count').textContent = unread.length; $('inbox-count').hidden = !unread.length;
+  const loud = unread.filter(x => !isQuiet(x));
+  $('inbox').classList.toggle('calm', !loud.length);
+  $('inbox-count').textContent = loud.length; $('inbox-count').hidden = !loud.length;
   $('inbox-none').hidden = unread.length > 0;
   appendByNotebook(box, unread, false);
   $('inbox-more').hidden = !read.length;
@@ -1089,6 +1133,8 @@ function setEditorChrome() {
   (t ? $('t-pg-del-slot') : $('del-page-home')).append($('del-page'), $('trash-btn'));
   closeTMenus();
   $('paper').hidden = t;
+  $('tool-heart').hidden = $('tool-star').hidden = t; $('tool-thumb').hidden = !t;
+  if (STAMPS[tool]) setTool('pen');
   $('bg-btn').hidden = t;
   $('chat').hidden = true;
   $('chat-title').textContent = t ? '학생과 이야기' : '선생님과 이야기';
@@ -1967,7 +2013,7 @@ $('recover-close').addEventListener('click', () => { $('recover-box').hidden = t
 const RETRY_SEAL = '다시 해 볼까요?';
 const FB_TRACK_START = Date.parse('2026-11-18T08:20:00Z');
 const FB_LABEL = { unseen: '미확인', retry: '안 고침', seen: '확인함', fixed: '고침·답장', ask: '학생 질문', pass: '미확인 · 칭찬 도장만', done: '확인 완료' };
-let fbRows = [], fbFilter = 'unseen', fbLoadId = 0, fbMore = false;
+let fbRows = [], fbFilter = 'unseen', fbLoadId = 0, fbMore = false, fbFolded = new Set(lsGet('dn-fb-folded') || []);
 const hhmm = t => { const d = new Date(t), now = new Date(); const day = d.toDateString() === now.toDateString() ? '오늘' : (new Date(now - 86400000).toDateString() === d.toDateString() ? '어제' : `${d.getMonth() + 1}/${d.getDate()}`); return `${day} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
 async function loadFbStatus() {
   const id = ++fbLoadId, days = +$('fb-days').value || 0, since = days ? Date.now() - days * 86400000 : 0;
@@ -2004,11 +2050,13 @@ async function loadFbStatus() {
     const p = pd && pd.exists ? pd.data() : {}, f = fd && fd.exists ? fd.data() : {};
     g.missing = !(pd && pd.exists);
     if (typeof p.n === 'number') g.n = p.n;
-    g.seal = f.seal || ''; g.ink = (f.strokes || []).length > 0;
+    g.seal = f.seal || ''; g.ink = (f.strokes || []).some(s => s.t !== 'e' && s.t !== 's');
+    g.stampAt = (f.strokes || []).reduce((m, s) => s.t === 's' ? Math.max(m, (s.a || 1) * 1000) : m, 0);
+    g.praise = (!!g.seal && g.seal !== RETRY_SEAL) || g.stampAt > 0;
     g.seenAt = p.fbSeenAt || 0; g.edited = p.edited || 0; g.replied = p.repliedAt || 0;
     // the chat on this page, when there is any talk: who spoke last, and the teacher's last message
     let msgs = [];
-    if (g.kinds.has('chat') || !g.t || (!g.ink && !g.seal)) {
+    if (g.kinds.has('chat') || !g.t || (!g.ink && !g.seal && !g.stampAt)) {
       const cs = await refs.chat(g.nb, g.pg).orderBy('at').get().catch(() => null);
       msgs = cs ? cs.docs.map(d => d.data()) : [];
     }
@@ -2023,10 +2071,10 @@ async function loadFbStatus() {
     g.isSeen = seen; g.isFixed = fixed; g.isReplied = replied;
     // the teacher already looked at the fix (opened it from this list) and nothing changed since
     // to be fixed: the "다시 해 볼까요?" seal, or red pen with no seal (a praise seal means it is fine as it is)
-    const needsFix = g.seal === RETRY_SEAL || (g.ink && !g.seal);
+    const needsFix = g.seal === RETRY_SEAL || (g.ink && !g.praise);
     g.needsFix = needsFix;
     const looked = g.checkedEdit !== undefined ? (g.checkedEdit >= g.edited && g.checkedReply >= g.replied) : (g.checked && g.checked >= Math.max(g.edited, g.replied));
-    if (!g.t || (!g.ink && !g.seal)) {
+    if (!g.t || (!g.ink && !g.seal && !g.stampAt)) {
       // only talk on this page. The student's last word is a question waiting for an answer;
       // a reply to the student counts as dealt with; a message the teacher started waits until the student opens it
       const startedByStudent = msgs.length && msgs[0].from === 's';
@@ -2038,11 +2086,11 @@ async function loadFbStatus() {
     // only a "well done" seal and nothing else to read: not urgent, so it waits under "더보기"
     // or the newest thing the teacher did was to give a praise seal (e.g. after checking a fix, 다시 해 볼까요? → 참 잘했어요):
     // the red pen and talk before it were already seen, so this too waits under "더보기"
-    const inkAt = (f.strokes || []).reduce((m, s) => s.t === 'e' ? m : Math.max(m, (s.a || 0) * 1000), 0);
-    const sealAt = f.sealAt || 0;
+    const inkAt = (f.strokes || []).reduce((m, s) => s.t === 'e' || s.t === 's' ? m : Math.max(m, (s.a || 0) * 1000), 0);
+    const sealAt = Math.max(g.seal && g.seal !== RETRY_SEAL ? f.sealAt || 0 : 0, g.stampAt);
     const prevSeen = (p.fbSeenFor || 0) >= Math.max(inkAt, tLast) || !!g.checked || fixed;
-    const praiseLast = g.seal && g.seal !== RETRY_SEAL && sealAt && inkAt <= sealAt + 1000 && tLast <= sealAt && prevSeen;
-    if (g.cat === 'unseen' && g.seal && g.seal !== RETRY_SEAL && ((!g.ink && !g.kinds.has('chat')) || praiseLast)) g.cat = 'pass';
+    const praiseLast = g.praise && sealAt && inkAt <= sealAt + 1000 && tLast <= sealAt && prevSeen;
+    if (g.cat === 'unseen' && g.praise && g.seal !== RETRY_SEAL && ((!g.ink && !g.kinds.has('chat')) || praiseLast)) g.cat = 'pass';
   }));
   if (id !== fbLoadId) return;
   fbRows = list.filter(g => !g.missing).sort((a, b) => b.t - a.t);
@@ -2076,11 +2124,26 @@ function renderFbStatus() {
     all: '확인 완료로 숨긴 것을 뺀 전체예요.' }[fbFilter];
   const box = $('fb-list'); box.textContent = '';
   if (!rows.length) { const p = document.createElement('p'); p.className = 'small'; p.style.padding = '14px'; p.textContent = '여기에 해당하는 피드백이 없어요.'; box.append(p); return; }
-  rows.forEach((g, i) => {
+  // grouped by notebook (the notebook with the newest feedback first); a notebook's group can be folded
+  const byNb = new Map();
+  for (const g of rows) { const k = g.nbName || '공책'; if (!byNb.has(k)) byNb.set(k, []); byNb.get(k).push(g); }
+  const ordered = [...byNb.values()].flat();
+  let idx = 0;
+  for (const [name, items] of byNb) {
+    const folded = fbFolded.has(name);
+    const head = document.createElement('button'); head.className = 'fb-nb-head'; head.setAttribute('aria-expanded', String(!folded));
+    head.textContent = `${folded ? '▸' : '▾'} 📒 ${name}`;
+    const cnt = document.createElement('span'); cnt.className = 'cnt'; cnt.textContent = `${items.length}개`; head.append(cnt);
+    head.addEventListener('click', () => { if (folded) fbFolded.delete(name); else fbFolded.add(name); lsPut('dn-fb-folded', [...fbFolded]); renderFbStatus(); });
+    box.append(head);
+    const start = idx; idx += items.length;
+    if (folded) continue;
+    items.forEach((g, j) => {
+    const i = start + j, rows = ordered;
     const row = document.createElement('div'); row.className = 'fb-row';
     const who = document.createElement('b'); who.textContent = `${g.st.num}번 ${g.st.name || ''}`;
     const what = document.createElement('span'); what.className = 'what';
-    const kinds = g.cat === 'ask' ? `학생이 보낸 말: "${g.text || '…'}"` : [g.ink ? '빨간펜' : '', g.seal ? `도장 "${g.seal}"` : '', g.kinds.has('chat') ? `대화${g.text ? ' "' + g.text + '"' : ''}` : ''].filter(Boolean).join(' + ') || '피드백';
+    const kinds = g.cat === 'ask' ? `학생이 보낸 말: "${g.text || '…'}"` : [g.ink ? '빨간펜' : '', g.stampAt ? '👍' : '', g.seal ? `도장 "${g.seal}"` : '', g.kinds.has('chat') ? `대화${g.text ? ' "' + g.text + '"' : ''}` : ''].filter(Boolean).join(' + ') || '피드백';
     const extra = [g.isSeen && g.seenAt ? `${hhmm(g.seenAt)}에 열어 봄` : '', g.isFixed && g.needsFix && g.edited ? `${hhmm(g.edited)}에 고침` : '', g.isReplied ? '답장함' : '', g.resends ? `다시 알림 ${g.resends}번` : ''].filter(Boolean).join(' · ');
     what.innerHTML = ''; what.append(`${g.nbName || '공책'} · ${g.n || '?'}쪽`);
     const sm = document.createElement('small'); sm.textContent = kinds + (extra ? ' · ' + extra : ''); what.append(sm);
@@ -2100,7 +2163,8 @@ function renderFbStatus() {
     row.append(who, what, tag, when, acts);
     row.addEventListener('click', () => openFbRow(rows, i));
     box.append(row);
-  });
+    });
+  }
 }
 const fbShown = () => fbRows.filter(g => fbFilter === 'all' ? g.cat !== 'done' : g.cat === fbFilter);
 function openFbRow(rows, i) {
@@ -2129,7 +2193,7 @@ function resendFb(list) {
   let n = 0;
   for (const g of list) {
     const st = students.find(s => s.id === g.st.id) || g.st;
-    notifyStudent(st, classRefs(classId, st.id), 'fb', { id: g.nb, name: g.nbName }, { id: g.pg, n: g.n }, '', true);
+    notifyStudent(st, classRefs(classId, st.id), 'fb', { id: g.nb, name: g.nbName }, { id: g.pg, n: g.n }, '', true, { fix: g.cat !== 'pass' });
     n++;
   }
   toast(`${n}명에게 다시 알림을 보냈어요`);
@@ -2272,7 +2336,10 @@ function flushSave() {
     const ink = inkCount(strokes), base = fbBase && fbBase.pg === pg ? fbBase : { ink: 0, seal: '' };
     const added = ink > base.ink || (seal && seal !== base.seal);
     fbBase = { pg, ink, seal, sealAt: body.sealAt };
-    job = () => refs.fb(book.id, pg.id).set(body).then(() => { if (added) notifyStudent(st, refs, 'fb', book, pg); });
+    // tell the student whether this feedback asks for a fix (yellow, must be opened) or is praise only (quiet)
+    const pen = strokes.some(s => !s.erase && !s.stamp), praise = (seal && seal !== RETRY_SEAL) || strokes.some(s => s.stamp);
+    const fix = seal === RETRY_SEAL || (pen && !praise);
+    job = () => refs.fb(book.id, pg.id).set(body).then(() => { if (added) notifyStudent(st, refs, 'fb', book, pg, '', false, { fix }); });
   } else {
     pg.edited = Date.now(); pg.editedFor = pg.fbSeenFor || 0;
     const body = { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H, bg: pg.bg || 0, bgSrc: pg.bg ? (pg.bgSrc || '') : '',
@@ -2403,6 +2470,7 @@ function drawStroke(c, s, k = view) {
   if (cl) c.restore();
 }
 function drawStrokeIn(c, s, k) {
+  if (s.stamp) { drawStamp(c, s, k); return; }
   if (s.hl) { drawHighlight(c, s, k); return; }
   const pts = s.pts; if (!pts.length) return;
   if (pts.length === 1) { dotAt(c, s, pts[0], k); return; }
@@ -2507,6 +2575,7 @@ function redraw() {
   ctx.globalCompositeOperation = 'source-over';
   ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(frame, 0, 0); ctx.restore();
   if (!current) { sctx.drawImage(frame, 0, 0); ink.style.visibility = 'hidden'; }
+  if (stampSel) placeSel();
 }
 // the pen is down: show the writing canvas again (it already holds the same picture)
 function inkUp() { if (ink.style.visibility) ink.style.visibility = ''; }
@@ -2683,7 +2752,7 @@ function clearLive() { wipe(lctx); }
 function renderLive() { clearLive(); drawStroke(lctx, current); lctx.globalCompositeOperation = 'source-over'; }
 
 // straight-line helper: draw, then hold the pen still → the stroke becomes a straight line
-const HOLD_MS = 500, HOLD_SLOP = 5, MIN_LEN = 60, AXIS_DEG = 7;
+const HOLD_MS = 500, HOLD_SLOP = 5, MIN_LEN = 20, LONG_LEN = 60, AXIS_DEG = 7, CIRCLE_MIN = 48;
 let holdTimer = null, holdAnchor = null, lastMoveAt = 0;
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 function aim(a, b) {
@@ -2692,12 +2761,43 @@ function aim(a, b) {
   if (Math.abs(deg - 90) < AXIS_DEG) return { x: a.x, y: b.y, p: b.p };
   return b;
 }
+// a closed, round loop bigger than one line of the notebook becomes a circle (small ㅇ, 0, o stay as written)
+function fitCircle(pts) {
+  if (pts.length < 12) return null;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, L = 0;
+  for (let i = 0; i < pts.length; i++) { const q = pts[i]; x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); if (i) L += dist(pts[i - 1], q); }
+  const w = x1 - x0, h = y1 - y0;
+  if (w < CIRCLE_MIN || h < CIRCLE_MIN || w / h > 1.35 || h / w > 1.35) return null;
+  const a = pts[0], b = pts[pts.length - 1], d = Math.max(w, h);
+  if (dist(a, b) > d * 0.3) return null;               // the ends have to meet (more or less)
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const rs = pts.map(q => Math.hypot(q.x - cx, q.y - cy)), r = rs.reduce((t, v) => t + v, 0) / rs.length;
+  const sd = Math.sqrt(rs.reduce((t, v) => t + (v - r) * (v - r), 0) / rs.length);
+  if (sd > r * 0.18 || L < Math.PI * 2 * r * 0.8 || L > Math.PI * 2 * r * 1.5) return null;
+  return { x: cx, y: cy, r };
+}
 function trySnap() {
   holdTimer = null;
   if (!current || current.snap || current.erase) return;
   const pts = current.pts, a = pts[0], b = pts[pts.length - 1];
-  if (dist(a, b) < MIN_LEN) return;
   const avgP = pts.reduce((t, q) => t + q.p, 0) / pts.length;
+  const circle = fitCircle(pts);
+  if (circle) {
+    if (!current.live) { strokes.pop(); redraw(); current.live = true; }
+    current.snap = 'circle';
+    const n = Math.max(32, Math.round(circle.r / 2)), a0 = Math.atan2(a.y - circle.y, a.x - circle.x);
+    current.pts = Array.from({ length: n + 1 }, (_, i) => { const t = a0 + i / n * Math.PI * 2; return { x: circle.x + Math.cos(t) * circle.r, y: circle.y + Math.sin(t) * circle.r, p: avgP }; });
+    renderLive();
+    statusText.textContent = '원으로 바꿨어요 · 펜을 떼면 확정돼요';
+    return;
+  }
+  const len = dist(a, b);
+  if (len < MIN_LEN) return;
+  // a short stroke is straightened only when it is already nearly straight (a pause inside a letter must not flatten it)
+  if (len < LONG_LEN) {
+    const dev = pts.reduce((m, q) => Math.max(m, Math.abs((b.x - a.x) * (a.y - q.y) - (a.x - q.x) * (b.y - a.y)) / len), 0);
+    if (dev > len * 0.2) return;
+  }
   if (!current.live) { strokes.pop(); redraw(); current.live = true; }
   current.snap = true;
   current.pts = [{ x: a.x, y: a.y, p: avgP }, { ...aim(a, b), p: avgP }];
@@ -2722,6 +2822,8 @@ sheet.addEventListener('pointerdown', e => {
   if (current && e.pointerId !== activeId && ((e.pointerType === 'pen' && current.type === 'pen') || Date.now() - lastMoveAt > 1500)) finishStroke();
   if (current && e.pointerId === activeId && e.pointerType === 'pen') finishStroke();
   if (!allowed(e) || current) return;
+  if (stampSel) deselectStamp();
+  if (STAMPS[tool]) { e.preventDefault(); inkUp(); placeStamp(e); return; }
   if (zoom < 1) { const q = pt(e); if (q.x < 0 || q.y < 0 || q.x > PAGE_W || q.y > PAGE_H) return; }
   e.preventDefault();
   inkUp();
@@ -2743,6 +2845,7 @@ sheet.addEventListener('pointermove', e => {
   if (!current || e.pointerId !== activeId) return;
   e.preventDefault();
   lastMoveAt = Date.now();
+  if (current.snap === 'circle') return;
   if (current.snap) {
     const a = current.pts[0];
     current.pts[1] = { ...aim(a, pt(e)), p: a.p };
@@ -2798,10 +2901,108 @@ const sizes = [...document.querySelectorAll('.size')];
 const range = $('size-range');
 sizes.forEach(b => b.addEventListener('click', () => { size = +b.dataset.size; range.value = size; pressIn(sizes, b); }));
 range.addEventListener('input', () => { size = +range.value; pressIn(sizes, null); });
-const toolBtns = { pen: $('tool-pen'), hl: $('tool-hl'), eraser: $('tool-eraser') };
-function setTool(t) { tool = t; pressIn(Object.values(toolBtns), toolBtns[t]); }
+const toolBtns = { pen: $('tool-pen'), hl: $('tool-hl'), eraser: $('tool-eraser'), heart: $('tool-heart'), star: $('tool-star'), thumb: $('tool-thumb') };
+function setTool(t) { tool = t; pressIn(Object.values(toolBtns), toolBtns[t]); if (!STAMPS[t] && typeof deselectStamp === 'function') deselectStamp(); }
 toolBtns.pen.addEventListener('click', () => setTool('pen'));
 toolBtns.eraser.addEventListener('click', () => setTool('eraser'));
+for (const k of ['heart', 'star', 'thumb']) toolBtns[k].addEventListener('click', () => setTool(k));
+
+/* ---------- colour picker: any colour, by hue, saturation and brightness ---------- */
+const hsv2hex = (h, s, v) => {
+  const f = n => { const k = (n + h / 60) % 6; return v - v * s * Math.max(0, Math.min(k, 4 - k, 1)); };
+  return '#' + [f(5), f(3), f(1)].map(x => Math.round(x * 255).toString(16).padStart(2, '0')).join('');
+};
+function hex2hsv(hex) {
+  const n = parseInt(hex.slice(1), 16), r = (n >> 16 & 255) / 255, g = (n >> 8 & 255) / 255, b = (n & 255) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0;
+  if (d) h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return { h: (h * 60 + 360) % 360, s: mx ? d / mx : 0, v: mx };
+}
+const pk = { h: 140, s: 0.75, v: 0.75 };
+let pkRecent = (lsGet('dn-colors') || []).filter(c => /^#[0-9a-f]{6}$/i.test(c)).slice(0, 6);
+function pkRender() {
+  const sv = $('pk-sv'), hue = $('pk-hue');
+  sv.style.background = `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, hsl(${pk.h}, 100%, 50%))`;
+  $('pk-knob').style.left = pk.s * 100 + '%'; $('pk-knob').style.top = (1 - pk.v) * 100 + '%';
+  $('pk-hknob').style.left = pk.h / 360 * 100 + '%';
+  const box = $('pk-recent'); box.textContent = '';
+  for (const c of pkRecent) { const b = document.createElement('button'); b.style.background = c; b.setAttribute('aria-label', '최근 색'); b.addEventListener('click', () => { Object.assign(pk, hex2hsv(c)); pkApply(); }); box.append(b); }
+}
+function pkApply() {
+  const c = hsv2hex(pk.h, pk.s, pk.v), cb = $('c-custom');
+  cb.hidden = false; cb.dataset.color = c; cb.style.background = c;
+  color = c; pressIn(swatches, cb);
+  if (tool === 'eraser' || STAMPS[tool]) setTool('pen');
+  pkRender();
+}
+function pkDrag(el, fn) {
+  el.addEventListener('pointerdown', e => {
+    e.preventDefault(); el.setPointerCapture(e.pointerId); fn(e);
+    const mv = ev => fn(ev), up = () => { el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); };
+    el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+  });
+}
+pkDrag($('pk-sv'), e => { const r = $('pk-sv').getBoundingClientRect(); pk.s = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)); pk.v = 1 - Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)); pkApply(); });
+pkDrag($('pk-hue'), e => { const r = $('pk-hue').getBoundingClientRect(); pk.h = Math.min(359.9, Math.max(0, (e.clientX - r.left) / r.width * 360)); pkApply(); });
+function pkClose() {
+  if ($('picker').hidden) return;
+  $('picker').hidden = true; $('c-more').setAttribute('aria-expanded', 'false');
+  const c = $('c-custom').dataset.color;
+  if (!$('c-custom').hidden && c) { pkRecent = [c, ...pkRecent.filter(x => x !== c)].slice(0, 6); lsPut('dn-colors', pkRecent); }
+}
+$('c-more').addEventListener('click', () => {
+  if (!$('picker').hidden) { pkClose(); return; }
+  if (/^#[0-9a-f]{6}$/i.test(color)) Object.assign(pk, hex2hsv(color));
+  $('picker').hidden = false; $('c-more').setAttribute('aria-expanded', 'true'); pkRender();
+});
+$('pk-done').addEventListener('click', pkClose);
+document.addEventListener('pointerdown', e => { if (!$('picker').hidden && !e.target.closest('#picker, #c-more')) pkClose(); });
+$('c-custom').addEventListener('click', () => { if (tool === 'eraser' || STAMPS[tool]) setTool('pen'); });
+{ if (pkRecent[0]) { const cb = $('c-custom'); cb.hidden = false; cb.dataset.color = pkRecent[0]; cb.style.background = pkRecent[0]; } }
+
+/* ---------- stamps: tap to put one down, then drag it to move or its corner to resize ---------- */
+function placeSel() {
+  if (stampSel && !strokes.includes(stampSel)) stampSel = null;
+  selBox.hidden = !stampSel; if (!stampSel) return;
+  const s = stampSel, w = s.size * scale;
+  selBox.style.left = (s.x * scale - w / 2) + 'px'; selBox.style.top = (s.y * scale - w / 2) + 'px';
+  selBox.style.width = selBox.style.height = w + 'px';
+  selBox.style.borderWidth = 2 / zoom + 'px';
+  selHandle.style.width = selHandle.style.height = 26 / zoom + 'px';
+}
+function deselectStamp() { stampSel = null; placeSel(); }
+function stampChanged() {
+  delete stampSel._enc;
+  placeSel();
+  if (!stampFrame) stampFrame = requestAnimationFrame(() => { stampFrame = 0; resetLayers(); redraw(); });
+}
+function placeStamp(e) {
+  const q = pt(e);
+  if (q.x < 0 || q.y < 0 || q.x > PAGE_W || q.y > PAGE_H) return;
+  const s = mkStamp(tool, q.x, q.y, 48, STAMPS[tool].color, Date.now());
+  strokes.push(s); stampSel = s; hint.hidden = true;
+  redraw(); placeSel(); markDirty();
+}
+function selDrag(el, onMove) {
+  el.addEventListener('pointerdown', e => {
+    if (!stampSel) return;
+    e.preventDefault(); e.stopPropagation(); el.setPointerCapture(e.pointerId);
+    const s = stampSel, start = pt(e), orig = { x: s.x, y: s.y, size: s.size };
+    const mv = ev => { onMove(s, orig, start, pt(ev)); stampChanged(); };
+    const up = () => { el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); markDirty(); };
+    el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+  });
+}
+// the body moves the stamp; the corner resizes it like a picture (the opposite corner stays put)
+selDrag(selBox, (s, o, a, b) => {
+  s.x = Math.min(PAGE_W, Math.max(0, o.x + b.x - a.x)); s.y = Math.min(PAGE_H, Math.max(0, o.y + b.y - a.y)); s.pts = [{ x: s.x, y: s.y, p: 0.5 }];
+});
+selDrag(selHandle, (s, o, a, b) => {
+  const left = o.x - o.size / 2, top = o.y - o.size / 2;
+  const w = Math.min(600, Math.max(16, Math.max(b.x - left, b.y - top)));
+  s.size = w; s.x = left + w / 2; s.y = top + w / 2; s.pts = [{ x: s.x, y: s.y, p: 0.5 }];
+});
 toolBtns.hl.addEventListener('click', () => {
   setTool('hl');
   if (color === '#1b1b1b') { const y = $('c-yellow'); color = y.dataset.color; pressIn(swatches, y); }
