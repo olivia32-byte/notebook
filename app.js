@@ -1196,7 +1196,7 @@ function showPage(i) {
     const takeFb = d => {
       const data = d && d.exists ? d.data() : {};
       strokes = (data.strokes || []).map(decode); seal = data.seal || '';
-      fbBase = { pg, ink: inkCount(strokes), seal, sealAt: data.sealAt || (seal ? data.updated : 0) || 0 };
+      fbBase = { pg, ink: inkCount(strokes), seal, sealAt: data.sealAt || (seal ? data.updated : 0) || 0, addedAt: data.addedAt || data.updated || 0 };
       fbUpdated = data.updated || 0;
       ready = true; renderSeal(); redraw();
     };
@@ -2063,7 +2063,7 @@ async function loadFbStatus() {
     const tLast = msgs.reduce((m, x) => x.from === 't' ? Math.max(m, x.at || 0) : m, 0);
     const lastMsg = msgs[msgs.length - 1];
     // everything below compares the teacher's own times only (tablet clocks may be off by minutes)
-    const ref = Math.max(f.updated || 0, tLast);
+    const ref = Math.max(f.addedAt || f.updated || 0, tLast);
     const forT = v => ref > 0 && (v || 0) >= ref;
     const seen = forT(p.fbSeenFor) || (!p.fbSeenFor && g.seenAt >= g.t);
     const fixed = forT(p.editedFor) || (!p.editedFor && g.edited > g.t);
@@ -2335,7 +2335,9 @@ function flushSave() {
     // tell the student only when something was added (new red-pen lines or a new stamp), not when erasing
     const ink = inkCount(strokes), base = fbBase && fbBase.pg === pg ? fbBase : { ink: 0, seal: '' };
     const added = ink > base.ink || (seal && seal !== base.seal);
-    fbBase = { pg, ink, seal, sealAt: body.sealAt };
+    // when something was last added (erasing alone is not new feedback for the student to see)
+    body.addedAt = added || !base.addedAt ? body.updated : base.addedAt;
+    fbBase = { pg, ink, seal, sealAt: body.sealAt, addedAt: body.addedAt };
     // tell the student whether this feedback asks for a fix (yellow, must be opened) or is praise only (quiet)
     const pen = strokes.some(s => !s.erase && !s.stamp), praise = (seal && seal !== RETRY_SEAL) || strokes.some(s => s.stamp);
     const fix = seal === RETRY_SEAL || (pen && !praise);
