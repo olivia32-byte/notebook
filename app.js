@@ -705,6 +705,7 @@ $('t-prev-kid').addEventListener('click', () => browseStep(-1));
 $('t-next-kid').addEventListener('click', () => browseStep(1));
 function updateBrowseBar() {
   const on = !!browse; $('t-browse').hidden = !on;
+  $('t-again').hidden = !(browse && browse.rows && browse.rows[browse.i] && browse.rows[browse.i].needsFix && browse.rows[browse.i].cat !== 'unseen');
   $('t-done').hidden = !(browse && browse.rows && browse.rows[browse.i] && (['seen', 'fixed'].includes(browse.rows[browse.i].cat) || (['unseen', 'pass'].includes(browse.rows[browse.i].cat) && browse.rows[browse.i].t < FB_TRACK_START)));
   if (!on) return;
   if (browse.rows) { const r = browse.rows[browse.i]; $('t-kid-pos').textContent = `피드백 현황 · ${browse.i + 1} / ${browse.rows.length}${r ? ' · ' + FB_LABEL[r.cat] : ''}`; return; }
@@ -2025,7 +2026,7 @@ async function loadFbStatus() {
     // a re-sent reminder is not new feedback: it must not reset what the student has seen or fixed
     const key = st.id + '/' + x.nb + '/' + x.pg;
     const g = groups.get(key) || { key, st, nb: x.nb, nbName: x.nbName, pg: x.pg, n: x.n, t: 0, kinds: new Set(), text: '', resends: 0, done: true, checked: 0 };
-    if (!x.resend) g.t = Math.max(g.t, t); g.kinds.add(x.kind); if (x.kind === 'chat' && x.text) g.text = x.text; if (x.resend) g.resends++;
+    if (!x.resend || x.again) g.t = Math.max(g.t, t); g.kinds.add(x.kind); if (x.kind === 'chat' && x.text) g.text = x.text; if (x.resend) g.resends++;
     if (!x.done) g.done = false;
     if (x.checkedAt) g.checked = Math.max(g.checked, x.checkedAt);
     if (x.checkedEdit !== undefined) { g.checkedEdit = Math.max(g.checkedEdit || 0, x.checkedEdit); g.checkedReply = Math.max(g.checkedReply || 0, x.checkedReply || 0); }
@@ -2211,6 +2212,18 @@ $('fb-more').addEventListener('click', () => {
 $('fb-days').addEventListener('change', () => { lsPut('dn-fb-days', $('fb-days').value); loadFbStatus(); });
 { const d = lsGet('dn-fb-days'); if (d !== null && d !== undefined) $('fb-days').value = String(d); }
 $('fb-resend-all').addEventListener('click', () => resendFb(fbShown()));
+// the student wrote on the page but did not fix it (e.g. the next lesson's notes): ask again. This counts as new
+// feedback, so the page goes back to 미확인, then 안 고침 once opened, and 고침 only after writing on it again.
+$('t-again').addEventListener('click', () => {
+  const r = browse && browse.rows && browse.rows[browse.i];
+  if (!r || !nb || !pages[pi] || mode !== 'teacher') return;
+  const now = Date.now(), pg = pages[pi];
+  if (fbBase && fbBase.pg === pg) fbBase.addedAt = now;
+  R.fb(nb.id, pg.id).update({ addedAt: now, updated: now }).catch(err => toast('보내지 못했어요. ' + errText(err)));
+  notifyStudent(tStudent, R, 'fb', nb, pg, '', true, { fix: true, again: true });
+  r.cat = 'unseen'; updateBrowseBar();
+  toast('다시 고쳐 보자고 알렸어요. 학생이 열 때까지 "미확인"에 있어요');
+});
 $('t-done').addEventListener('click', () => {
   if (!browse || !browse.rows) return;
   const g = browse.rows[browse.i]; if (!g) return;
