@@ -751,6 +751,9 @@ const shown = document.createElement('canvas'); shown.id = 'shown'; ink.before(s
 const sctx = shown.getContext('2d', { alpha: false });
 const offBase = document.createElement('canvas'), bctx = offBase.getContext('2d');
 const offEdit = document.createElement('canvas'), ectx = offEdit.getContext('2d');
+// the teacher's marks as the student sees them, on a layer of their own: the teacher's eraser must only take
+// away the teacher's marks (drawn on the page itself it cut holes through the paper, which showed black)
+const offOver = document.createElement('canvas'), octx = offOver.getContext('2d');
 const cssCache = {};
 const CSS_FALLBACK = { '--paper': '#fffdf7', '--rule': '#b9d3ea', '--margin': '#f0a6a6', '--line': '#d5dde3' };
 // an empty value would leave the canvas colour at its default, black, so fall back to the usual colour
@@ -2346,7 +2349,7 @@ function resize() {
   const W = Math.round(boxW * dpr), H = Math.round(boxH * dpr);
   // the browser bar or keyboard can fire resize without changing the page: keep the canvases then
   if (W === ink.width && H === ink.height) { applyView(); redraw(); return; }
-  for (const c of [ink, shown, live, offBase, offEdit, frame]) { c.width = W; c.height = H; }
+  for (const c of [ink, shown, live, offBase, offEdit, offOver, frame]) { c.width = W; c.height = H; }
   applyView();
   resetLayers();
   redraw();
@@ -2476,11 +2479,15 @@ function redraw() {
   }
   if (base.length) fctx.drawImage(offBase, 0, 0);
   fctx.drawImage(offEdit, 0, 0);
-  fctx.setTransform(1, 0, 0, 1, vx(), vy());
-  // student: a glow around red pen the student has not seen before
-  if (mode === 'student' && !ownBook) for (const s of overlay) if (s.at > fbSince && !s.erase) { drawStroke(fctx, glow(s, NEW_FB_HALO, 22)); drawStroke(fctx, glow(s, NEW_FB_GLOW, 10)); }
-  for (const s of overlay) drawStroke(fctx, s);
-  fctx.setTransform(1, 0, 0, 1, 0, 0);
+  wipe(octx);
+  if (overlay.length) {
+    octx.setTransform(1, 0, 0, 1, vx(), vy());
+    // student: a glow around red pen the student has not seen before
+    if (mode === 'student' && !ownBook) for (const s of overlay) if (s.at > fbSince && !s.erase) { drawStroke(octx, glow(s, NEW_FB_HALO, 22)); drawStroke(octx, glow(s, NEW_FB_GLOW, 10)); }
+    for (const s of overlay) drawStroke(octx, s);
+    octx.globalCompositeOperation = 'source-over'; octx.setTransform(1, 0, 0, 1, 0, 0);
+    fctx.drawImage(offOver, 0, 0);
+  }
   fctx.globalCompositeOperation = 'source-over';
   ctx.globalCompositeOperation = 'source-over';
   ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(frame, 0, 0); ctx.restore();
@@ -2759,7 +2766,7 @@ function finishStroke() {
   const wasErase = current.erase, wasSnap = current.snap, type = current.type;
   current = null; activeId = null;
   if (wasErase || pendingRedraw || overlay.some(o => o.hl || o.at > fbSince)) redraw();
-  else if (overlay.length) { for (const o of overlay) drawStroke(ctx, o); ctx.globalCompositeOperation = 'source-over'; }
+  else if (overlay.length) { ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(offOver, 0, 0); ctx.restore(); }
   if (wasSnap) setStatus(type);
   markDirty();
 }
@@ -2848,5 +2855,5 @@ if (window.ResizeObserver) {
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
 
 // (after every canvas exists) rebuild the page when Chrome hands back a canvas it had emptied
-for (const c of [ink, live, offBase, offEdit, frame, paperC]) c.addEventListener('contextrestored', () => setTimeout(repaintAll, 0));
+for (const c of [ink, live, offBase, offEdit, offOver, frame, paperC]) c.addEventListener('contextrestored', () => setTimeout(repaintAll, 0));
 window.addEventListener('pageshow', () => repaintAll());
