@@ -2923,13 +2923,29 @@ sheet.addEventListener('contextmenu', e => e.preventDefault());
 
 /* ---------- toolbar ---------- */
 const swatches = [...document.querySelectorAll('.swatch')];
-swatches.forEach(b => b.addEventListener('click', () => { color = b.dataset.color; pressIn(swatches, b); if (tool === 'eraser') setTool('pen'); }));
+swatches.forEach(b => b.addEventListener('click', () => { if (stampColorTo(b.dataset.color, b)) return; color = b.dataset.color; pressIn(swatches, b); if (tool === 'eraser') setTool('pen'); }));
+/* heart and star stamps take their colour from the same palette as the pen, but keep their own (the pen colour stays as it was) */
+const STAMP_COLORABLE = ['heart', 'star'];
+const stampColor = { heart: STAMPS.heart.color, star: STAMPS.star.color, ...(lsGet('dn-stamp-colors') || {}) };
+function paintStampTools() { for (const k of STAMP_COLORABLE) { const sp = toolBtns[k] && toolBtns[k].querySelector('span'); if (sp) sp.style.color = stampColor[k]; } }
+function stampColorTo(c, btn) {
+  const k = stampSel && STAMP_COLORABLE.includes(stampSel.stamp) ? stampSel.stamp : STAMP_COLORABLE.includes(tool) ? tool : null;
+  if (!k) return false;
+  stampColor[k] = c; lsPut('dn-stamp-colors', stampColor); paintStampTools();
+  if (stampSel && stampSel.stamp === k) { stampSel.color = c; stampChanged(); markDirty(); }
+  pressIn(swatches, btn);
+  return true;
+}
+function syncSwatches() {
+  const cur = STAMP_COLORABLE.includes(tool) ? stampColor[tool] : color;
+  pressIn(swatches, swatches.find(b => !b.hidden && b.dataset.color.toLowerCase() === String(cur).toLowerCase()) || null);
+}
 const sizes = [...document.querySelectorAll('.size')];
 const range = $('size-range');
 sizes.forEach(b => b.addEventListener('click', () => { size = +b.dataset.size; range.value = size; pressIn(sizes, b); }));
 range.addEventListener('input', () => { size = +range.value; pressIn(sizes, null); });
 const toolBtns = { pen: $('tool-pen'), hl: $('tool-hl'), eraser: $('tool-eraser'), heart: $('tool-heart'), star: $('tool-star'), thumb: $('tool-thumb') };
-function setTool(t) { tool = t; pressIn(Object.values(toolBtns), toolBtns[t]); if (!STAMPS[t] && typeof deselectStamp === 'function') deselectStamp(); }
+function setTool(t) { tool = t; pressIn(Object.values(toolBtns), toolBtns[t]); if (typeof deselectStamp === 'function') deselectStamp(); if (typeof syncSwatches === 'function') syncSwatches(); }
 toolBtns.pen.addEventListener('click', () => setTool('pen'));
 toolBtns.eraser.addEventListener('click', () => setTool('eraser'));
 for (const k of ['heart', 'star', 'thumb']) toolBtns[k].addEventListener('click', () => setTool(k));
@@ -2959,6 +2975,7 @@ function pkRender() {
 function pkApply() {
   const c = hsv2hex(pk.h, pk.s, pk.v), cb = $('c-custom');
   cb.hidden = false; cb.dataset.color = c; cb.style.background = c;
+  if (stampColorTo(c, cb)) { pkRender(); return; }
   color = c; pressIn(swatches, cb);
   if (tool === 'eraser' || STAMPS[tool]) setTool('pen');
   pkRender();
@@ -2980,12 +2997,14 @@ function pkClose() {
 }
 $('c-more').addEventListener('click', () => {
   if (!$('picker').hidden) { pkClose(); return; }
-  if (/^#[0-9a-f]{6}$/i.test(color)) Object.assign(pk, hex2hsv(color));
+  const cur = STAMP_COLORABLE.includes(tool) ? stampColor[tool] : color;
+  if (/^#[0-9a-f]{6}$/i.test(cur)) Object.assign(pk, hex2hsv(cur));
   $('picker').hidden = false; $('c-more').setAttribute('aria-expanded', 'true'); pkRender();
 });
 $('pk-done').addEventListener('click', pkClose);
 document.addEventListener('pointerdown', e => { if (!$('picker').hidden && !e.target.closest('#picker, #c-more')) pkClose(); });
-$('c-custom').addEventListener('click', () => { if (tool === 'eraser' || STAMPS[tool]) setTool('pen'); });
+$('c-custom').addEventListener('click', () => { if (stampColorTo($('c-custom').dataset.color, $('c-custom'))) return; if (tool === 'eraser' || STAMPS[tool]) setTool('pen'); });
+paintStampTools();
 { if (pkRecent[0]) { const cb = $('c-custom'); cb.hidden = false; cb.dataset.color = pkRecent[0]; cb.style.background = pkRecent[0]; } }
 
 /* ---------- stamps: tap to put one down, then drag it to move or its corner to resize ---------- */
@@ -3007,7 +3026,7 @@ function stampChanged() {
 function placeStamp(e) {
   const q = pt(e);
   if (q.x < 0 || q.y < 0 || q.x > PAGE_W || q.y > PAGE_H) return;
-  const s = mkStamp(tool, q.x, q.y, 48, STAMPS[tool].color, Date.now());
+  const s = mkStamp(tool, q.x, q.y, 48, stampColor[tool] || STAMPS[tool].color, Date.now());
   strokes.push(s); stampSel = s; hint.hidden = true;
   redraw(); placeSel(); markDirty();
 }
