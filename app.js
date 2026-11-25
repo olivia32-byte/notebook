@@ -847,7 +847,7 @@ function notifyStudent(st, refs, kind, book, pg, text, force, extra) {
   // A sitting ends after 90 seconds without saving; feedback after that is a new notice of its own.
   const prev = kind === 'fb' && list.slice().reverse().find(x => x.kind === 'fb' && x.pg === pg.id);
   if (prev && !force && now - (prev.last || prev.at) < NOTICE_GAP) {
-    const flagChanged = extra && 'fix' in extra && prev.fix !== extra.fix;
+    const flagChanged = extra && (('fix' in extra && prev.fix !== extra.fix) || ('pen' in extra && !!prev.pen !== !!extra.pen));
     if (now - (prev.last || prev.at) < 30000 && !flagChanged) return;
     prev.last = now; if (extra) Object.assign(prev, extra);
     const notices = list.slice(-NOTICE_KEEP);
@@ -955,13 +955,14 @@ function noticeRow(x, read, inGroup) {
   const what = document.createElement('span'); what.className = 'what';
   const t = document.createElement('b'); t.textContent = inGroup ? (x.n ? x.n + '쪽' : '쪽') : `${x.nbName || '공책'} ${x.n ? x.n + '쪽' : ''}`.trim();
   const d = document.createElement('span');
-  d.textContent = `${x.kind === 'chat' ? `메시지 "${x.text}"` : x.fix === false ? '칭찬' : '선생님 피드백'} · ${ago(x.at)}`;
+  d.textContent = `${x.kind === 'chat' ? `메시지 "${x.text}"` : x.fix === false ? (x.pen ? '칭찬 메시지' : '칭찬') : '선생님 피드백'} · ${ago(x.at)}`;
   what.append(t, d);
   const go = document.createElement('span'); go.className = 'go'; go.textContent = read ? '다시 보기 →' : '보러 가기 →';
   main.append(ico, what, go);
   main.addEventListener('click', () => goToNotice(x));
   row.append(main);
-  if (quiet) {
+  // praise written in red pen (not only a stamp) is a message to read: it goes away only by opening the page
+  if (quiet && !x.pen) {
     const ok = document.createElement('button'); ok.className = 'inbox-ok'; ok.textContent = '확인 완료';
     ok.addEventListener('click', () => okNotice(x));
     row.append(ok);
@@ -2270,7 +2271,7 @@ function resendFb(list) {
   let n = 0;
   for (const g of list) {
     const st = students.find(s => s.id === g.st.id) || g.st;
-    notifyStudent(st, classRefs(classId, st.id), 'fb', { id: g.nb, name: g.nbName }, { id: g.pg, n: g.n }, '', true, { fix: g.cat !== 'pass' });
+    notifyStudent(st, classRefs(classId, st.id), 'fb', { id: g.nb, name: g.nbName }, { id: g.pg, n: g.n }, '', true, { fix: g.cat !== 'pass', pen: g.cat === 'pass' && !!g.ink });
     n++;
   }
   toast(`${n}명에게 다시 알림을 보냈어요`);
@@ -2432,7 +2433,7 @@ function flushSave() {
     // tell the student whether this feedback asks for a fix (yellow, must be opened) or is praise only (quiet)
     const pen = strokes.some(s => !s.erase && !s.stamp), praise = (seal && seal !== RETRY_SEAL) || strokes.some(s => s.stamp);
     const fix = seal === RETRY_SEAL || (pen && !praise);
-    job = () => refs.fb(book.id, pg.id).set(body).then(() => { if (added) notifyStudent(st, refs, 'fb', book, pg, '', false, { fix }); });
+    job = () => refs.fb(book.id, pg.id).set(body).then(() => { if (added) notifyStudent(st, refs, 'fb', book, pg, '', false, { fix, pen: !fix && pen }); });
   } else {
     pg.edited = Date.now(); pg.editedFor = pg.fbSeenFor || 0;
     const body = { id: pg.id, n: pg.n, paper: pg.paper, created: pg.created, strokes: enc, w: PAGE_W, h: PAGE_H, bg: pg.bg || 0, bgSrc: pg.bg ? (pg.bgSrc || '') : '',
