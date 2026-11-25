@@ -1263,7 +1263,7 @@ function showPage(i) {
     const takeFb = d => {
       const data = d && d.exists ? d.data() : {};
       strokes = (data.strokes || []).map(decode); seal = data.seal || '';
-      fbBase = { pg, ink: inkCount(strokes), seal, sealAt: data.sealAt || (seal ? data.updated : 0) || 0, addedAt: data.addedAt || data.updated || 0 };
+      fbBase = { pg, ink: inkCount(strokes), seal, sealAt: data.sealAt || (seal ? data.updated : 0) || 0, addedAt: data.addedAt || data.updated || 0, roundAt: data.roundAt || 0, prevRoundAt: data.prevRoundAt || 0, prevAddedAt: data.prevAddedAt || 0 };
       fbUpdated = data.updated || 0;
       ready = true; renderSeal(); redraw();
     };
@@ -2134,7 +2134,13 @@ async function fbPass(since, read) {
     if (typeof p.n === 'number') g.n = p.n;
     g.seal = f.seal || ''; g.ink = (f.strokes || []).some(s => s.t !== 'e' && s.t !== 's');
     g.stampAt = (f.strokes || []).reduce((m, s) => s.t === 's' ? Math.max(m, (s.a || 1) * 1000) : m, 0);
-    g.praise = (!!g.seal && g.seal !== RETRY_SEAL) || g.stampAt > 0;
+    // what the latest round of feedback added (older rounds on the same page do not decide its kind)
+    const prevUnseen = (f.prevAddedAt || 0) > 0 && (p.fbSeenFor || 0) < f.prevAddedAt;
+    const roundAt = Math.floor(((prevUnseen ? f.prevRoundAt : f.roundAt) || 0) / 1000) * 1000, inRound = s => (s.a || 0) * 1000 >= roundAt;
+    const sealNew = !!g.seal && (!roundAt || (f.sealAt || 0) >= roundAt);
+    g.rInk = (f.strokes || []).some(s => s.t !== 'e' && s.t !== 's' && inRound(s));
+    g.rRetry = sealNew && g.seal === RETRY_SEAL;
+    g.praise = (sealNew && g.seal !== RETRY_SEAL) || (f.strokes || []).some(s => s.t === 's' && inRound(s));
     g.seenAt = p.fbSeenAt || 0; g.edited = p.edited || 0; g.replied = p.repliedAt || 0;
     // the chat on this page, when there is any talk: who spoke last, and the teacher's last message
     let msgs = [];
@@ -2153,7 +2159,7 @@ async function fbPass(since, read) {
     g.isSeen = seen; g.isFixed = fixed; g.isReplied = replied;
     // the teacher already looked at the fix (opened it from this list) and nothing changed since
     // to be fixed: the "다시 해 볼까요?" seal, or red pen with no seal (a praise seal means it is fine as it is)
-    const needsFix = g.seal === RETRY_SEAL || (g.ink && !g.praise);
+    const needsFix = g.rRetry || (g.rInk && !g.praise);
     g.needsFix = needsFix;
     const looked = g.checkedEdit !== undefined ? (g.checkedEdit >= g.edited && g.checkedReply >= g.replied) : (g.checked && g.checked >= Math.max(g.edited, g.replied));
     if (!g.t || (!g.ink && !g.seal && !g.stampAt)) {
@@ -2172,7 +2178,7 @@ async function fbPass(since, read) {
     const sealAt = Math.max(g.seal && g.seal !== RETRY_SEAL ? f.sealAt || 0 : 0, g.stampAt);
     const prevSeen = (p.fbSeenFor || 0) >= Math.max(inkAt, tLast) || !!g.checked || fixed;
     const praiseLast = g.praise && sealAt && inkAt <= sealAt + 1000 && tLast <= sealAt && prevSeen;
-    if (g.cat === 'unseen' && g.praise && g.seal !== RETRY_SEAL && ((!g.ink && !g.kinds.has('chat')) || praiseLast)) g.cat = 'pass';
+    if (g.cat === 'unseen' && g.praise && !g.rRetry && ((!g.rInk && !g.kinds.has('chat')) || praiseLast)) g.cat = 'pass';
   }));
   return list.filter(g => !g.missing).sort((a, b) => b.t - a.t);
 }
@@ -2271,7 +2277,7 @@ function resendFb(list) {
   let n = 0;
   for (const g of list) {
     const st = students.find(s => s.id === g.st.id) || g.st;
-    notifyStudent(st, classRefs(classId, st.id), 'fb', { id: g.nb, name: g.nbName }, { id: g.pg, n: g.n }, '', true, { fix: g.cat !== 'pass', pen: g.cat === 'pass' && !!g.ink });
+    notifyStudent(st, classRefs(classId, st.id), 'fb', { id: g.nb, name: g.nbName }, { id: g.pg, n: g.n }, '', true, { fix: g.cat !== 'pass', pen: g.cat === 'pass' && !!g.rInk });
     n++;
   }
   toast(`${n}명에게 다시 알림을 보냈어요`);
@@ -2429,10 +2435,20 @@ function flushSave() {
     const added = ink > base.ink || (seal && seal !== base.seal);
     // when something was last added (erasing alone is not new feedback for the student to see)
     body.addedAt = added || !base.addedAt ? body.updated : base.addedAt;
-    fbBase = { pg, ink, seal, sealAt: body.sealAt, addedAt: body.addedAt };
+    // a page gets feedback again and again (day after day): only what this round added decides what kind it is.
+    // A round starts when feedback is added after a pause longer than one sitting (the same 90 s as the notices).
+    // (it starts with the first mark written after the last save that added something)
+    const roundStart = () => strokes.reduce((m, s) => (s.at || 0) > (base.addedAt || 0) && !s.erase ? Math.min(m, s.at) : m, body.updated);
+    body.roundAt = added && (!base.roundAt || !base.addedAt || body.updated - base.addedAt > NOTICE_GAP) ? Math.floor(roundStart() / 1000) * 1000 : (base.roundAt || 0); // whole seconds, as the marks' times are saved
+    // the round before is kept too: until the student has seen it, the teacher's list counts both together
+    if (body.roundAt !== (base.roundAt || 0)) { body.prevRoundAt = base.roundAt || 0; body.prevAddedAt = base.addedAt || 0; }
+    else { body.prevRoundAt = base.prevRoundAt || 0; body.prevAddedAt = base.prevAddedAt || 0; }
+    fbBase = { pg, ink, seal, sealAt: body.sealAt, addedAt: body.addedAt, roundAt: body.roundAt, prevRoundAt: body.prevRoundAt, prevAddedAt: body.prevAddedAt };
     // tell the student whether this feedback asks for a fix (yellow, must be opened) or is praise only (quiet)
-    const pen = strokes.some(s => !s.erase && !s.stamp), praise = (seal && seal !== RETRY_SEAL) || strokes.some(s => s.stamp);
-    const fix = seal === RETRY_SEAL || (pen && !praise);
+    const inRound = s => (s.at || 0) >= body.roundAt, sealNew = !!seal && (body.sealAt || 0) >= body.roundAt;
+    const pen = strokes.some(s => !s.erase && !s.stamp && inRound(s));
+    const praise = (sealNew && seal !== RETRY_SEAL) || strokes.some(s => s.stamp && inRound(s));
+    const fix = (sealNew && seal === RETRY_SEAL) || (pen && !praise);
     job = () => refs.fb(book.id, pg.id).set(body).then(() => { if (added) notifyStudent(st, refs, 'fb', book, pg, '', false, { fix, pen: !fix && pen }); });
   } else {
     pg.edited = Date.now(); pg.editedFor = pg.fbSeenFor || 0;
