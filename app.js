@@ -355,7 +355,7 @@ function enterClass(c) {
     allStudents = snap.docs.map(d => ({ ...d.data(), id: d.id })).sort((a, b) => (a.num || 0) - (b.num || 0));
     // students the teacher hid (moved to another school) are left out of every list; their notebooks stay
     students = allStudents.filter(st => !st.hiddenAt);
-    renderClass(); renderPins(); renderHandoutKids(); syncMembers();
+    renderClass(); renderPins(); renderHandoutKids(); syncMembers(); renderSentBar();
   }, err => { $('kids-empty').hidden = false; $('kids-empty').textContent = '학생 목록을 불러오지 못했어요. ' + errText(err); });
   ageTimer = setInterval(() => students.forEach(updateCardText), 15000);
 }
@@ -849,7 +849,7 @@ function notifyStudent(st, refs, kind, book, pg, text, force, extra) {
   if (prev && !force && now - (prev.last || prev.at) < NOTICE_GAP) {
     const flagChanged = extra && (('fix' in extra && prev.fix !== extra.fix) || ('pen' in extra && !!prev.pen !== !!extra.pen));
     if (now - (prev.last || prev.at) < 30000 && !flagChanged) return;
-    prev.last = now; if (extra) Object.assign(prev, extra);
+    prev.last = now; if (extra) Object.assign(prev, extra); setTimeout(renderSentBar, 0);
     const notices = list.slice(-NOTICE_KEEP);
     live.notices = notices; st.notices = notices;
     refs.student.update({ notices }).catch(() => {});
@@ -859,10 +859,45 @@ function notifyStudent(st, refs, kind, book, pg, text, force, extra) {
   const notices = list.slice(-NOTICE_KEEP);
   live.notices = notices; st.notices = notices;
   // say so on the teacher's screen, so it is clear the notice went (or why it did not)
+  renderSentBar();
   refs.student.update({ notices })
     .then(() => toast(`${st.num ? st.num + '번 ' : ''}학생에게 알림을 보냈어요`))
     .catch(err => toast('학생에게 알림을 보내지 못했어요. ' + errText(err)));
 }
+/* ---------- teacher: which notice this page sent, and taking it back while the student has not seen it ---------- */
+function sentNotice() {
+  if (mode !== 'teacher' || !tStudent || !nb || !pages[pi]) return null;
+  const st = (typeof students !== 'undefined' && students.find(x => x.id === tStudent.id)) || tStudent, pg = pages[pi];
+  const list = Array.isArray(st.notices) ? st.notices : [];
+  let x = null; for (const n of list) if (n.kind === 'fb' && n.nb === nb.id && n.pg === pg.id && (!x || n.at >= x.at)) x = n;
+  return x && { st, pg, x };
+}
+const SHOW_SENT_BAR = false; // waiting for the teacher's OK on the example screen
+function renderSentBar() {
+  const bar = $('t-sent'); if (!bar) return;
+  if (!SHOW_SENT_BAR) { bar.hidden = true; return; }
+  const s = sentNotice();
+  if (!s) { bar.hidden = true; return; }
+  const { st, pg, x } = s;
+  const what = x.again ? '🔔 다시 고쳐 보자' : x.fix === false ? (x.pen ? '★ 칭찬 메시지' : '★ 칭찬') : '✎ 고쳐 볼 피드백';
+  // the student has seen it once the page says so (times on the teacher's clock: the feedback's own time)
+  const seen = (pg.fbSeenFor || 0) >= (fbBase && fbBase.pg === pg ? fbBase.addedAt || 0 : x.at) || (pg.fbSeenFor || 0) >= x.at;
+  bar.hidden = false;
+  bar.className = 't-sent ' + (x.fix === false ? 'praise' : 'fix');
+  $('t-sent-text').textContent = `${st.num}번에게 보낸 알림: ${what} · ${ago(x.last || x.at)} · ${seen ? '학생이 봤어요' : '학생이 아직 안 봤어요'}`;
+  $('t-sent-undo').hidden = seen;
+}
+$('t-sent-undo').addEventListener('click', () => {
+  const s = sentNotice(); if (!s) return;
+  const { st, x } = s, refs = classRefs(classId, st.id);
+  const notices = (Array.isArray(st.notices) ? st.notices : []).filter(n => n !== x);
+  st.notices = notices; if (tStudent && tStudent.id === st.id) tStudent.notices = notices;
+  refs.student.update({ notices })
+    .then(() => toast('알림을 취소했어요. 빨간펜과 도장은 공책에 그대로 있어요'))
+    .catch(err => toast('취소하지 못했어요. ' + errText(err)));
+  renderSentBar();
+});
+setInterval(() => { if (mode === 'teacher' && !$('t-sent').hidden) renderSentBar(); }, 30000);
 let noticeUnsub = null, noticeSeen = {}, noticeKey = '', noticeList = [], noticeShown = null;
 function startNotices() {
   stopNotices();
@@ -1240,7 +1275,13 @@ function showPage(i) {
       if (!first && data.updated === lastUpdated) return;
       overlay = (data.strokes || []).map(decode); seal = data.seal || '';
       fbSealAt = data.sealAt || data.updated || 0;
-      if ((data.strokes && data.strokes.length) || data.seal) markFbSeen(pg, data.updated || 0);
+      // "다시 고쳐 보자" sent after the student last looked: the feedback asked about shines again
+      if (first && (data.againAt || 0) > fbSince) {
+        const from = Math.floor((data.againFrom || 0) / 1000) * 1000;
+        fbSince = Math.min(fbSince, from - 1);
+        if (seal && fbSealAt >= from) fbSealAt = Math.max(fbSealAt, fbSince + 1);
+      }
+      if ((data.strokes && data.strokes.length) || data.seal) markFbSeen(pg, Math.max(data.updated || 0, data.againAt || 0));
       renderSeal(); safeRedraw();
       if (!first && !d.metadata.hasPendingWrites) toast('선생님이 공책에 피드백을 남겼어요');
       first = false; lastUpdated = data.updated;
@@ -1254,6 +1295,7 @@ function showPage(i) {
       if (!d.exists) return;
       const data = d.data();
       base = decodeMore(base, data.strokes || []);
+      if ((data.fbSeenFor || 0) !== (pg.fbSeenFor || 0)) { pg.fbSeenFor = data.fbSeenFor || 0; renderSentBar(); }
       if (data.paper !== undefined && data.paper !== pg.paper) { pg.paper = data.paper; sheet.className = pg.paper; paperKey = ''; }
       if ((data.bg || 0) !== (pg.bg || 0)) { pg.bg = data.bg || 0; pg.bgSrc = data.bgSrc || ''; paperKey = ''; ensureBg(pg); }
       safeRedraw();
@@ -1263,9 +1305,9 @@ function showPage(i) {
     const takeFb = d => {
       const data = d && d.exists ? d.data() : {};
       strokes = (data.strokes || []).map(decode); seal = data.seal || '';
-      fbBase = { pg, ink: inkCount(strokes), seal, sealAt: data.sealAt || (seal ? data.updated : 0) || 0, addedAt: data.addedAt || data.updated || 0, roundAt: data.roundAt || 0, prevRoundAt: data.prevRoundAt || 0, prevAddedAt: data.prevAddedAt || 0 };
+      fbBase = { pg, ink: inkCount(strokes), seal, sealAt: data.sealAt || (seal ? data.updated : 0) || 0, addedAt: data.addedAt || data.updated || 0, roundAt: data.roundAt || 0, prevRoundAt: data.prevRoundAt || 0, prevAddedAt: data.prevAddedAt || 0, againAt: data.againAt || 0, againFrom: data.againFrom || 0 };
       fbUpdated = data.updated || 0;
-      ready = true; renderSeal(); redraw();
+      ready = true; renderSeal(); redraw(); renderSentBar();
     };
     let cachedSeq = null;
     fbRef.getCache().then(d => {
@@ -1415,7 +1457,8 @@ $('del-page').addEventListener('click', async () => {
   if (handBlocked()) return;
   if (pages.length <= 1) { toast('마지막 한 쪽은 지울 수 없어요. 공책을 통째로 지우려면 공책장에서 지워요.'); return; }
   if (btn.dataset.armed !== '1') {
-    btn.dataset.armed = '1'; btn.textContent = '한 번 더 누르면 지워져요'; btn.classList.add('danger');
+    holdSize(btn); btn.dataset.armed = '1'; btn.textContent = '한 번 더!'; btn.classList.add('danger');
+    toast('한 번 더 누르면 이 쪽이 지워져요');
     clearTimeout(delPageTimer);
     delPageTimer = setTimeout(resetDelPage, 3000);
     return;
@@ -2132,6 +2175,7 @@ async function fbPass(since, read) {
     const p = pd && pd.exists ? pd.data() : {}, f = fd && fd.exists ? fd.data() : {};
     g.missing = !(pd && pd.exists);
     if (typeof p.n === 'number') g.n = p.n;
+    g.roundAt = f.roundAt || 0;
     g.seal = f.seal || ''; g.ink = (f.strokes || []).some(s => s.t !== 'e' && s.t !== 's');
     g.stampAt = (f.strokes || []).reduce((m, s) => s.t === 's' ? Math.max(m, (s.a || 1) * 1000) : m, 0);
     // what the latest round of feedback added (older rounds on the same page do not decide its kind)
@@ -2277,6 +2321,8 @@ function resendFb(list) {
   let n = 0;
   for (const g of list) {
     const st = students.find(s => s.id === g.st.id) || g.st;
+    // a reminder to fix: the feedback shines again when the student opens the page
+    if (g.needsFix) classRefs(classId, st.id).fb(g.nb, g.pg).update({ againAt: Date.now(), againFrom: g.roundAt || 0 }).catch(() => {});
     notifyStudent(st, classRefs(classId, st.id), 'fb', { id: g.nb, name: g.nbName }, { id: g.pg, n: g.n }, '', true, { fix: g.cat !== 'pass', pen: g.cat === 'pass' && !!g.rInk });
     n++;
   }
@@ -2301,8 +2347,9 @@ $('t-again').addEventListener('click', () => {
   const r = browse && browse.rows && browse.rows[browse.i];
   if (!r || !nb || !pages[pi] || mode !== 'teacher') return;
   const now = Date.now(), pg = pages[pi];
-  if (fbBase && fbBase.pg === pg) fbBase.addedAt = now;
-  R.fb(nb.id, pg.id).update({ addedAt: now, updated: now }).catch(err => toast('보내지 못했어요. ' + errText(err)));
+  const againFrom = fbBase && fbBase.pg === pg ? (fbBase.roundAt || 0) : 0;
+  if (fbBase && fbBase.pg === pg) { fbBase.addedAt = now; fbBase.againAt = now; fbBase.againFrom = againFrom; }
+  R.fb(nb.id, pg.id).update({ addedAt: now, updated: now, againAt: now, againFrom }).catch(err => toast('보내지 못했어요. ' + errText(err)));
   notifyStudent(tStudent, R, 'fb', nb, pg, '', true, { fix: true, again: true });
   r.cat = 'unseen'; updateBrowseBar();
   toast('다시 고쳐 보자고 알렸어요. 학생이 열 때까지 "미확인"에 있어요');
@@ -2443,7 +2490,8 @@ function flushSave() {
     // the round before is kept too: until the student has seen it, the teacher's list counts both together
     if (body.roundAt !== (base.roundAt || 0)) { body.prevRoundAt = base.roundAt || 0; body.prevAddedAt = base.addedAt || 0; }
     else { body.prevRoundAt = base.prevRoundAt || 0; body.prevAddedAt = base.prevAddedAt || 0; }
-    fbBase = { pg, ink, seal, sealAt: body.sealAt, addedAt: body.addedAt, roundAt: body.roundAt, prevRoundAt: body.prevRoundAt, prevAddedAt: body.prevAddedAt };
+    if (base.againAt) { body.againAt = base.againAt; body.againFrom = base.againFrom || 0; } // a save after "다시 알림" keeps it
+    fbBase = { pg, ink, seal, sealAt: body.sealAt, addedAt: body.addedAt, roundAt: body.roundAt, prevRoundAt: body.prevRoundAt, prevAddedAt: body.prevAddedAt, againAt: body.againAt || 0, againFrom: body.againFrom || 0 };
     // tell the student whether this feedback asks for a fix (yellow, must be opened) or is praise only (quiet)
     const inRound = s => (s.at || 0) >= body.roundAt, sealNew = !!seal && (body.sealAt || 0) >= body.roundAt;
     const pen = strokes.some(s => !s.erase && !s.stamp && inRound(s));
@@ -3146,17 +3194,21 @@ $('undo').addEventListener('click', () => {
     hint.hidden = true; redraw(); markDirty();
   }
 });
+// keep a button exactly as wide as it is now while its label changes
+function holdSize(b) { if (!b.style.minWidth) b.style.minWidth = b.offsetWidth + 'px'; }
 const clearBtn = $('clear');
 let armed = null;
 clearBtn.addEventListener('click', () => {
   if (!ready) return;
   if (handBlocked()) return;
   if (!armed) {
-    clearBtn.textContent = '한 번 더 누르면 지워져요';
-    armed = setTimeout(() => { armed = null; clearBtn.textContent = '전체 지우기'; }, 2500);
+    // the button keeps its size and place (a longer label pushed it to the next line and children lost it)
+    holdSize(clearBtn); clearBtn.textContent = '한 번 더!'; clearBtn.classList.add('danger');
+    toast('한 번 더 누르면 전체가 지워져요');
+    armed = setTimeout(() => { armed = null; clearBtn.textContent = '전체 지우기'; clearBtn.classList.remove('danger'); }, 3000);
     return;
   }
-  clearTimeout(armed); armed = null; clearBtn.textContent = '전체 지우기';
+  clearTimeout(armed); armed = null; clearBtn.textContent = '전체 지우기'; clearBtn.classList.remove('danger');
   // remember what was there, so 되돌리기 can bring the whole page back
   clearMark = { pg: pages[pi], prev: strokes.slice() };
   strokes.length = 0; redraw(); if (mode === 'student') hint.hidden = false; markDirty();

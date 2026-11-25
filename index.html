@@ -128,6 +128,11 @@ input[type=range] { width: 110px; accent-color: var(--accent); }
 .t-menu-btn[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); background: #eef5fb; font-weight: 600; }
 #del-page-home, #t-pg-del-slot { display: contents; }
 .teacher-bar { background: var(--bar); border-bottom: 1px solid var(--line); padding-block: 8px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.t-sent { flex: 1 1 100%; display: flex; align-items: center; gap: 12px; padding: 6px 8px 6px 14px; border-radius: 10px; font-size: 14px; font-weight: 600; }
+.t-sent.fix { background: #fff3a8; border: 1px solid #f2c500; color: #3a2a00; }
+.t-sent.praise { background: #e2f4e4; border: 1px solid #9fd4a6; color: #1f4d27; }
+.t-sent span { flex: 1; min-width: 0; }
+.t-sent button { flex: none; font-size: 13px; }
 .seal-btn { border-color: var(--seal); color: var(--seal); font-family: var(--font-title); }
 .seal-btn[aria-pressed="true"] { background: var(--seal); color: #fff; box-shadow: none; border-color: var(--seal); }
 
@@ -544,6 +549,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
   </header>
 
   <div class="teacher-bar gutter" id="teacher-bar" hidden>
+    <div class="t-sent" id="t-sent" hidden><span id="t-sent-text"></span><button id="t-sent-undo">알림 취소</button></div>
     <div class="group">
       <span class="label">공책</span>
       <select id="t-notebook" aria-label="학생 공책 고르기"></select>
@@ -639,7 +645,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 <div id="busy" hidden><div class="busy-box"><div class="spinner"></div><b id="busy-text">잠시만 기다려 주세요…</b><span class="small">끝날 때까지 공책을 넘기거나 나가지 말아 주세요.</span></div></div>
 <div id="toast" role="status" hidden></div>
 
-<script src="config.js?v=69"></script>
-<script type="module" src="app.js?v=69"></script>
+<script src="config.js?v=70"></script>
+<script type="module" src="app.js?v=70"></script>
 </body>
 </html>
