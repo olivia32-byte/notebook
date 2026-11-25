@@ -872,12 +872,13 @@ function sentNotice() {
   let x = null; for (const n of list) if (n.kind === 'fb' && n.nb === nb.id && n.pg === pg.id && (!x || n.at >= x.at)) x = n;
   return x && { st, pg, x };
 }
-const SHOW_SENT_BAR = false; // waiting for the teacher's OK on the example screen
+// banners the teacher ticked away (per notice; a new notice on the page shows again)
+let sentHidden = new Set(lsGet('dn-sent-hidden') || []);
+const sentKey = (st, x) => `${st.id}/${x.nb}/${x.pg}@${x.at}`;
 function renderSentBar() {
   const bar = $('t-sent'); if (!bar) return;
-  if (!SHOW_SENT_BAR) { bar.hidden = true; return; }
   const s = sentNotice();
-  if (!s) { bar.hidden = true; return; }
+  if (!s || sentHidden.has(sentKey(s.st, s.x))) { bar.hidden = true; return; }
   const { st, pg, x } = s;
   const what = x.again ? '🔔 다시 고쳐 보자' : x.fix === false ? (x.pen ? '★ 칭찬 메시지' : '★ 칭찬') : '✎ 고쳐 볼 피드백';
   // the student has seen it once the page says so (times on the teacher's clock: the feedback's own time)
@@ -887,6 +888,12 @@ function renderSentBar() {
   $('t-sent-text').textContent = `${st.num}번에게 보낸 알림: ${what} · ${ago(x.last || x.at)} · ${seen ? '학생이 봤어요' : '학생이 아직 안 봤어요'}`;
   $('t-sent-undo').hidden = seen;
 }
+$('t-sent-hide').addEventListener('click', () => {
+  const s = sentNotice(); if (!s) return;
+  sentHidden.add(sentKey(s.st, s.x));
+  sentHidden = new Set([...sentHidden].slice(-300)); lsPut('dn-sent-hidden', [...sentHidden]);
+  renderSentBar();
+});
 $('t-sent-undo').addEventListener('click', () => {
   const s = sentNotice(); if (!s) return;
   const { st, x } = s, refs = classRefs(classId, st.id);
