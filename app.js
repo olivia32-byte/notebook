@@ -2248,7 +2248,6 @@ const fbShown = () => fbRows.filter(g => fbFilter === 'all' ? g.cat !== 'done' :
 function openFbRow(rows, i) {
   const g = rows[i]; if (!g) return;
   browse = { rows, i };
-  if (g.cat === 'fixed') setFbChecked(g);
   openTeacherNotebook(students.find(s => s.id === g.st.id) || g.st, { nb: g.nb, pg: g.pg });
 }
 // the student's record keeps the notices; "확인 완료" marks them, so they leave the list (and can come back)
@@ -2260,7 +2259,7 @@ function setFbDone(g, done) {
   g.done = done; g.cat = done ? 'done' : 'unseen';
   if (!done) loadFbStatus(); else renderFbStatus();
 }
-// the teacher opened a fixed/answered page from the list: that is the check, so it moves on to "확인함"
+// the teacher pressed "확인 완료" on a fixed/answered page: it moves on to "확인함" (opening it alone does not)
 function setFbChecked(g) {
   const st = students.find(s => s.id === g.st.id) || g.st, now = Date.now();
   const notices = (Array.isArray(st.notices) ? st.notices : []).map(x => x.nb === g.nb && x.pg === g.pg && (x.kind === 'fb' || x.kind === 'chat') ? { ...x, checkedAt: now, checkedEdit: g.edited || 0, checkedReply: g.replied || 0 } : x);
@@ -2304,7 +2303,9 @@ $('t-again').addEventListener('click', () => {
 $('t-done').addEventListener('click', () => {
   if (!browse || !browse.rows) return;
   const g = browse.rows[browse.i]; if (!g) return;
-  setFbDone(g, true); toast('확인 완료: 목록에서 숨겼어요');
+  // a fixed/answered page moves to "확인함" only when the teacher says so here (opening it is not enough)
+  if (g.cat === 'fixed') { setFbChecked(g); renderFbStatus(); toast('확인 완료: "확인함"으로 옮겼어요'); }
+  else { setFbDone(g, true); toast('확인 완료: 목록에서 숨겼어요'); }
   if (browse.i + 1 < browse.rows.length) browseStep(1);
 });
 // teacher: show (green) what the student wrote after the last feedback
