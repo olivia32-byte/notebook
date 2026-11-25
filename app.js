@@ -341,7 +341,7 @@ $('class-form').addEventListener('submit', async e => {
 $('to-classes').addEventListener('click', () => enterTeacherHome());
 
 /* ================= teacher: class grid ================= */
-let classUnsub = null, students = [], cards = {}, thumbSubs = {}, thumbData = {}, ageTimer = null, currentClass = null;
+let classUnsub = null, allStudents = [], students = [], cards = {}, thumbSubs = {}, thumbData = {}, ageTimer = null, currentClass = null;
 let seen = lsGet('dn-seen') || {};
 
 function enterClass(c) {
@@ -350,9 +350,11 @@ function enterClass(c) {
   $('class-title').textContent = c.name;
   $('class-code').textContent = c.id;
   stopClass();
-  $('kids').textContent = ''; cards = {}; students = []; layoutCount = -1; browse = null; colBooks = {}; $('col-name').textContent = ''; setClassTab('live');
+  $('kids').textContent = ''; cards = {}; students = []; allStudents = []; layoutCount = -1; browse = null; colBooks = {}; $('col-name').textContent = ''; setClassTab('live');
   classUnsub = db.collection(`classes/${c.id}/students`).onSnapshot(snap => {
-    students = snap.docs.map(d => ({ ...d.data(), id: d.id })).sort((a, b) => (a.num || 0) - (b.num || 0));
+    allStudents = snap.docs.map(d => ({ ...d.data(), id: d.id })).sort((a, b) => (a.num || 0) - (b.num || 0));
+    // students the teacher hid (moved to another school) are left out of every list; their notebooks stay
+    students = allStudents.filter(st => !st.hiddenAt);
     renderClass(); renderPins(); renderHandoutKids(); syncMembers();
   }, err => { $('kids-empty').hidden = false; $('kids-empty').textContent = '학생 목록을 불러오지 못했어요. ' + errText(err); });
   ageTimer = setInterval(() => students.forEach(updateCardText), 15000);
@@ -366,7 +368,7 @@ function renderClass() {
   $('kids-empty').hidden = students.length > 0;
   const n = students.length, relayout = n !== layoutCount;
   const box = $('kids');
-  for (const id of Object.keys(cards)) if (!students.some(s => s.id === id)) { cards[id].el.remove(); delete cards[id]; }
+  for (const id of Object.keys(cards)) if (!students.some(s => s.id === id)) { cards[id].el.remove(); delete cards[id]; if (thumbSubs[id]) { thumbSubs[id].unsub(); delete thumbSubs[id]; } }
   for (const st of students) {
     let c = cards[st.id];
     if (!c) {
@@ -719,13 +721,15 @@ $('enroll-form').addEventListener('submit', async e => {
   const num = parseInt($('e-num').value, 10), name = $('e-name').value.trim();
   if (!num || num < 1 || num > 99) { $('e-err').textContent = '번호(1~99)를 써 주세요.'; return; }
   if (!name) { $('e-err').textContent = '이름이나 별명을 써 주세요.'; return; }
+  const gone = allStudents.find(s => s.num === num && s.hiddenAt);
+  if (gone) { $('e-err').textContent = `${num}번은 숨긴 학생(${gone.name || ''})이 쓰던 번호예요. 다른 번호로 등록하거나, 아래 비밀번호 카드 맨 끝에서 "다시 보이기"를 눌러 주세요.`; return; }
   if (students.some(s => s.num === num)) { $('e-err').textContent = `${num}번은 이미 등록되어 있어요. 비밀번호를 바꾸려면 아래 카드에서 "새 비밀번호"를 눌러요.`; return; }
   $('e-err').textContent = ''; $('e-go').disabled = true;
   try {
     await issueAccount(num, name, 0);
     $('e-num').value = ''; $('e-name').value = '';
     toast(`${num}번 ${name} 등록됨`);
-    $('pins').hidden = false; $('toggle-pins').textContent = '숨기기';
+    $('pins').hidden = false; $('toggle-pins').textContent = '접기';
   } catch (err) { $('e-err').textContent = '등록하지 못했어요. ' + errText(err); }
   finally { $('e-go').disabled = false; }
 });
@@ -733,7 +737,7 @@ async function issueAccount(num, name, k) {
   const pin = randPin();
   const uid = await backend.createStudentAccount(studentEmail(classId, num, k), pin);
   const sid = 'n' + num;
-  const prev = students.find(s => s.id === sid) || {};
+  const prev = allStudents.find(s => s.id === sid) || {};
   const { id, ...rest } = prev;
   await db.doc(`classes/${classId}/students/${sid}`).set({ ...rest, num, name, uid, pin, k, created: prev.created || Date.now() });
   await db.doc(`classes/${classId}/members/${uid}`).set({ sid });
@@ -742,8 +746,11 @@ async function issueAccount(num, name, k) {
 }
 function renderPins() {
   const box = $('pin-cards'); box.textContent = '';
-  for (const st of students) {
-    const d = document.createElement('div'); d.className = 'pin-card';
+  const nHidden = allStudents.filter(st => st.hiddenAt).length;
+  $('hide-count').textContent = nHidden ? `숨긴 학생 ${nHidden}명` : '';
+  // hidden students (moved to another school) come last, greyed, with "다시 보이기"
+  for (const st of [...students, ...allStudents.filter(x => x.hiddenAt)]) {
+    const d = document.createElement('div'); d.className = 'pin-card' + (st.hiddenAt ? ' off' : '');
     const n = document.createElement('b'); n.textContent = `${st.num}번 ${st.name || ''}`;
     const cc = document.createElement('span'); cc.className = 'cc'; cc.textContent = `반 코드 ${classId}`;
     const p = document.createElement('span'); p.className = 'pin'; p.textContent = st.pin || '------';
@@ -754,10 +761,24 @@ function renderPins() {
       try { await issueAccount(st.num, st.name, (st.k || 0) + 1); toast(`${st.num}번 비밀번호를 새로 만들었어요`); }
       catch (err) { toast('바꾸지 못했어요. ' + errText(err)); again.disabled = false; }
     });
-    d.append(n, cc, p, again); box.append(d);
+    const hide = document.createElement('button');
+    hide.textContent = st.hiddenAt ? '다시 보이기' : '숨기기';
+    hide.title = '전학 간 학생은 숨기면 실시간 보드, 모아보기, 피드백 현황, 학습지 나눠 주기에서 빠져요. 공책은 그대로 남아요.';
+    hide.addEventListener('click', async () => {
+      if (!st.hiddenAt && hide.dataset.armed !== '1') { hide.dataset.armed = '1'; hide.textContent = '한 번 더 누르면 숨겨요'; setTimeout(() => { hide.dataset.armed = ''; hide.textContent = '숨기기'; }, 3000); return; }
+      hide.disabled = true;
+      try {
+        await db.doc(`classes/${classId}/students/${st.id}`).update({ hiddenAt: st.hiddenAt ? 0 : Date.now() });
+        toast(st.hiddenAt ? `${st.num}번 ${st.name || ''} 학생이 다시 보여요` : `${st.num}번 ${st.name || ''} 학생을 숨겼어요. 카드 맨 끝에서 다시 보이게 할 수 있어요`);
+      } catch (err) { toast('바꾸지 못했어요. ' + errText(err)); hide.disabled = false; }
+    });
+    const btns = document.createElement('div'); btns.className = 'pin-btns';
+    if (st.hiddenAt) { p.textContent = '숨긴 학생'; p.classList.add('gone'); btns.append(hide); }
+    else btns.append(again, hide);
+    d.append(n, cc, p, btns); box.append(d);
   }
 }
-$('toggle-pins').addEventListener('click', () => { const h = !$('pins').hidden; $('pins').hidden = h; $('toggle-pins').textContent = h ? '보기' : '숨기기'; });
+$('toggle-pins').addEventListener('click', () => { const h = !$('pins').hidden; $('pins').hidden = h; $('toggle-pins').textContent = h ? '보기' : '접기'; });
 
 /* ================= notebook (shared by student and teacher) ================= */
 const sheet = $('sheet'), ink = $('ink'), live = $('live');
