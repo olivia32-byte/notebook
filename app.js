@@ -1032,31 +1032,65 @@ async function openStudentNotebook(n) {
   refreshTrash();
 }
 let tStudent = null;
+// The copy already on this tablet answers at once; the server copy follows. Returns the first answer
+// (cache when it has something, else the server) and the server promise for a later refresh.
+function cacheFirst(q, map) {
+  const server = q.get().then(sn => sn.docs.map(map));
+  const cache = q.getCache ? q.getCache().then(c => (c && c.size ? c.docs.map(map) : null)).catch(() => null) : Promise.resolve(null);
+  return cache.then(list => ({ list, server }));
+}
 async function openTeacherNotebook(st, target) {
   if (!st) return;
+  // the open page's feedback is written now, to the student it belongs to, before anything switches
+  flushSave();
+  const seq = ++openSeq;
   tStudent = st;
   mode = 'teacher';
   seen[st.id] = Date.now(); lsPut('dn-seen', seen); updateCardText(st);
   R = classRefs(classId, st.id);
+  nb = null;
+  // the previous student's page must not stay on screen while this one loads
+  blankEditor('불러오는 중…');
   setEditorChrome();
   show('book'); updateBrowseBar();
   $('book-name').textContent = `${st.num}번 ${st.name || ''}`;
   setSave('불러오는 중…');
-  try { tNotebooks = (await R.books.get()).docs.map(d => ({ ...d.data(), id: d.id })).filter(n => !n.deletedAt); } catch (e) { tNotebooks = []; }
-  const sel = $('t-notebook'); sel.textContent = '';
-  for (const n of tNotebooks) { const o = document.createElement('option'); o.value = n.id; o.textContent = n.name; sel.append(o); }
   const cur = target || st.current;
+  const mapNb = d => ({ ...d.data(), id: d.id });
+  const fillSel = list => {
+    tNotebooks = list.filter(n => !n.deletedAt);
+    const sel = $('t-notebook'), keep = nb && nb.id; sel.textContent = '';
+    for (const n of tNotebooks) { const o = document.createElement('option'); o.value = n.id; o.textContent = n.name; sel.append(o); }
+    if (keep) sel.value = keep;
+  };
+  let got = null;
+  try { got = await cacheFirst(R.books, mapNb); } catch (e) { got = null; }
+  if (seq !== openSeq) return;
+  let list = got && got.list;
+  // the tablet copy may be missing the notebook asked for: then wait for the server
+  if (!list || (cur && cur.nb && !list.some(n => n.id === cur.nb && !n.deletedAt))) {
+    try { list = got ? await got.server : []; } catch (e) { list = list || []; }
+    if (seq !== openSeq) return;
+  } else if (got) {
+    got.server.then(full => { if (seq === openSeq && tStudent === st) fillSel(full); }).catch(() => {});
+  }
+  fillSel(list);
   const first = (cur && tNotebooks.find(n => n.id === cur.nb)) || tNotebooks[0];
   if (!first) { pages = []; nb = null; resize(); showEmptyTeacher(); return; }
-  sel.value = first.id;
+  $('t-notebook').value = first.id;
   await loadTeacherNotebook(first, cur && cur.nb === first.id ? cur.pg : null);
 }
 async function loadTeacherNotebook(n, pgId) {
   await flushSave(); $('t-rename-box').hidden = true; resetTDel();
   const seq = ++openSeq;
   nb = n; blankEditor('불러오는 중…');
-  let list = [];
-  try { list = (await R.pages(n.id).orderBy('n').get()).docs.map(d => ({ ...d.data(), id: d.id, _nb: n.id })); } catch (e) { list = []; }
+  const mapPg = d => ({ ...d.data(), id: d.id, _nb: n.id });
+  let got = null, list = [];
+  try { got = await cacheFirst(R.pages(n.id).orderBy('n'), mapPg); } catch (e) { got = null; }
+  if (seq !== openSeq || nb !== n) return;
+  let fromCache = false;
+  if (got && got.list && (!pgId || got.list.some(p => p.id === pgId))) { list = got.list; fromCache = true; }
+  else { try { list = got ? await got.server : []; } catch (e) { list = []; } }
   if (seq !== openSeq || nb !== n) return;
   pages = list;
   resize();
@@ -1064,6 +1098,16 @@ async function loadTeacherNotebook(n, pgId) {
   const i = pages.findIndex(p => p.id === pgId);
   showPage(i >= 0 ? i : pages.length - 1);
   setSave('');
+  // the server's list replaces the tablet copy (pages added meanwhile, new page numbers); the open page keeps its object
+  if (fromCache) got.server.then(full => {
+    if (seq !== openSeq || nb !== n || !full.length) return;
+    const open = pages[pi];
+    const merged = full.map(p => (open && p.id === open.id ? open : p));
+    if (open && !merged.includes(open)) return; // the open page is gone on the server: leave it to the live view
+    pages = merged; pi = pages.indexOf(open);
+    $('pageno').textContent = `${pi + 1} / ${pages.length}쪽`;
+    $('prev').disabled = pi === 0; $('next').disabled = pi === pages.length - 1;
+  }).catch(() => {});
 }
 function blankEditor(text) {
   clearPageSubs(); pages = []; pi = 0; strokes = []; base = []; overlay = []; seal = ''; ready = false; current = null;
